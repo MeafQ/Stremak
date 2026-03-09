@@ -30,8 +30,11 @@ from .models import (
 _log = logging.getLogger(__name__)
 
 
-class Config(BaseModel):
+class FilmixSettings(BaseModel):
     token: str | None = None
+
+    def is_configured(self) -> bool:
+        return bool(self.token)
 
 @dataclass
 class Filmix:
@@ -57,11 +60,10 @@ class Filmix:
     http: httpx.AsyncClient
 
     @classmethod
-    def from_config(cls, http: httpx.AsyncClient, raw: dict) -> 'Filmix | None':
-        config = Config.model_validate(raw.get(cls.slug, {}))
-        if config.token:
-            return FilmixPrivate(http=http, token=config.token)
-        return cls(http=http)
+    def from_settings(cls, http: httpx.AsyncClient, settings: FilmixSettings | None) -> 'FilmixPrivate | None':
+        if settings and settings.token:
+            return FilmixPrivate(http=http, token=settings.token)
+        return None
 
     @classmethod
     def get_routes(cls) -> Sequence[Route]:

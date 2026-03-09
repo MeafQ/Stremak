@@ -2,6 +2,7 @@ import logging
 
 from main import _select_play_stream
 from streaming.base import Stream
+from streaming.filmix import Filmix
 from streaming.parsing.catalog import Codec, Lang, Quality, Studio, VoiceType
 from streaming.parsing.core import Org, OrgList, Track
 from utils import decode_config, encode_config
@@ -57,6 +58,7 @@ def test_play_selection_survives_stream_reordering():
     selected = _select_play_stream(
         fresh_streams,
         play_identity,
+        parser=Filmix.parser,
         provider_name="filmix",
         stremio_id="tt0944947:1:6",
     )
@@ -94,6 +96,7 @@ def test_play_selection_uses_media_fields_to_break_ties_without_warning(caplog):
         selected = _select_play_stream(
             fresh_streams,
             play_identity,
+            parser=Filmix.parser,
             provider_name="filmix",
             stremio_id="tt0944947:1:6",
         )
@@ -131,6 +134,7 @@ def test_play_selection_logs_only_when_strong_candidates_remain_ambiguous(caplog
         selected = _select_play_stream(
             fresh_streams,
             play_identity,
+            parser=Filmix.parser,
             provider_name="filmix",
             stremio_id="tt0944947:1:6",
         )

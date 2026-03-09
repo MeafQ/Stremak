@@ -2,7 +2,6 @@ from collections.abc import AsyncIterable, AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import ClassVar, Protocol, Sequence
 
-import httpx
 from starlette.routing import Route
 
 from languages import LangCode
@@ -28,9 +27,6 @@ class MetadataModule(Protocol):
 
     @classmethod
     def get_routes(cls) -> Sequence[Route]: ...
-
-    @classmethod
-    def from_config(cls, http: httpx.AsyncClient, raw: dict) -> 'MetadataClient | None': ...
 
 class MetadataClient(Protocol):
     async def resolve(self, raw_id: str, language: str) -> MediaInfo | None: ...

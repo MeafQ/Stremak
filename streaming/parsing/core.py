@@ -125,12 +125,15 @@ class Parser:
             elif self.profile.track.attr(name) is not None:
                 plain_attrs.append((name, cast(TrackAttrVal[Any], attr)))
 
-        blocked_fields = {name for name in marker.blocked if self.profile.track.attr(name) is not None}
-        blocked_plain = {name for name in blocked_fields if self.profile.track.orgs.attr(name) is None}
         marker_blocked_orgs = {
             org_attr.kind
-            for name in blocked_fields
+            for name in marker.blocked
             if (org_attr := self.profile.track.orgs.attr(name)) is not None
+        }
+        blocked_plain = {
+            name
+            for name in marker.blocked
+            if self.profile.track.attr(name) is not None
         }
 
         if split_on_conflict:

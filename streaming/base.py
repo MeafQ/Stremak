@@ -3,7 +3,6 @@ import unicodedata
 from dataclasses import dataclass
 from typing import ClassVar, Protocol, Self, Sequence, TypeVar, runtime_checkable
 
-import httpx
 from rapidfuzz import fuzz
 from starlette.routing import Route
 
@@ -76,9 +75,6 @@ class StreamingModule(Protocol):
     @classmethod
     def get_routes(cls) -> Sequence[Route]: ...
 
-    @classmethod
-    def from_config(cls, http: httpx.AsyncClient, raw: dict) -> 'Self | StreamingService | None': ...
-
 @runtime_checkable
 class StreamingService(StreamingModule, Protocol):
     async def resolve_streams(
@@ -90,3 +86,23 @@ class StreamingService(StreamingModule, Protocol):
         episode: int | None = None,
         refresh: bool = False,
     ) -> list[Stream]: ...
+
+
+def select_stream_by_identity(
+    streams: list[Stream],
+    play_identity: dict,
+    *,
+    parser: Parser,
+) -> tuple[Stream | None, int, int, bool]:
+    if not streams:
+        return None, 0, 0, False
+
+    target = parser.profile.media.decode_identity(play_identity)
+    required_weight, scored = target.match_candidates(streams)
+    if not scored:
+        return None, required_weight, 0, target.has_min_identity()
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score = scored[0][0]
+    top = [stream for score, stream in scored if score == best_score]
+    return top[0], required_weight, len(top), target.has_min_identity()

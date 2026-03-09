@@ -19,8 +19,11 @@ from metadata.tmdb.models import (
 from utils import cached
 
 
-class Config(BaseModel):
+class TMDBSettings(BaseModel):
     api_key: str
+
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
 
 
 @dataclass
@@ -33,10 +36,9 @@ class TheMovieDB:
     api_key: str
     
     @classmethod
-    def from_config(cls, http: httpx.AsyncClient, raw: dict) -> Self | None:
-        config = Config.model_validate(raw.get(cls.slug, {}))
-        if config.api_key:
-            return cls(http=http, api_key=config.api_key)
+    def from_settings(cls, http: httpx.AsyncClient, settings: TMDBSettings | None) -> Self | None:
+        if settings and settings.api_key:
+            return cls(http=http, api_key=settings.api_key)
         return None
 
     @classmethod

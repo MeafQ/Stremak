@@ -33,6 +33,9 @@ class AttrVal(Generic[IdT]):
     def __hash__(self) -> int:
         return hash(self.id)
 
+    def identity_value(self) -> IdT:
+        return self.id
+
 
 @dataclass(frozen=True, slots=True, kw_only=True, eq=False)
 class TrackAttrVal(AttrVal[TrackIdT], Generic[TrackIdT]):
@@ -49,6 +52,21 @@ class TrackAttrVal(AttrVal[TrackIdT], Generic[TrackIdT]):
         if self.anchored:
             return self
         return replace(self, anchored=True)
+
+    def identity_ids(self) -> tuple[str, ...]:
+        return (self.id,)
+
+    def matches(self, other: "TrackAttrVal[Any]") -> bool:
+        return self.id == other.id
+
+    def shared_count(self, other: "TrackAttrVal[Any]") -> int:
+        return int(self.matches(other))
+
+    def with_confidence(self, offset: int) -> Self:
+        return replace(self, confidence=self.confidence + offset)
+
+    def merged(self, other: Self) -> Self:
+        return other if other.confidence > self.confidence else self
 
 
 class OrgKind(StrEnum):
@@ -102,11 +120,15 @@ class OrgList:
     def __getitem__(self, index: int) -> Org:
         return self.items[index]
 
-    def max_score(self) -> int:
+    @property
+    def score(self) -> int:
         return max((org.score for org in self.items), default=0)
 
     def identity_ids(self) -> tuple[str, ...]:
         return tuple(sorted({org.id for org in self.items}, key=str.casefold))
+
+    def identity_value(self) -> list[str]:
+        return list(self.identity_ids())
 
     def with_confidence(self, offset: int) -> "OrgList":
         return OrgList(tuple(replace(org, confidence=org.confidence + offset) for org in self.items))
@@ -135,7 +157,7 @@ class OrgList:
                 merged.append(org)
         return OrgList(tuple(merged))
 
-    def overlaps(self, other: "OrgList") -> bool:
+    def matches(self, other: "OrgList") -> bool:
         return any(self.same(left, right) for left in self.items for right in other.items)
 
     def shared_count(self, other: "OrgList") -> int:

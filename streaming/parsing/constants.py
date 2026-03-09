@@ -1,0 +1,43 @@
+DEFAULT_LOCALE = "ru"
+
+TRANSLATIONS: dict[str, dict[str, str]] = {
+    "ru": {
+        "track.unknown": "Неизвестно",
+        "official.official": "Офиц.",
+        "official.unofficial": "Неофиц.",
+        "audio_note.clean": "🔇 Чист. звук",
+        "commentary.commentary": "💬 Комментарии",
+        "ads.ads": "📣 Реклама",
+        "edition.directors_cut": "🎬 Реж. версия",
+        "edition.extended": "🎬 Расш. версия",
+        "edition.uncut": "🎬 Полная версия",
+        "edition.theatrical": "Театр. версия",
+        "edition.combined": "⚠️ Все серии",
+    },
+    "en": {
+        "track.unknown": "Unknown",
+        "official.official": "Official",
+        "official.unofficial": "Unofficial",
+        "audio_note.clean": "🔇 Clean audio",
+        "commentary.commentary": "💬 Commentary",
+        "ads.ads": "📣 Ads",
+        "edition.directors_cut": "🎬 Director's Cut",
+        "edition.extended": "🎬 Extended Edition",
+        "edition.uncut": "🎬 Uncut",
+        "edition.theatrical": "Theatrical",
+        "edition.combined": "⚠️ All episodes",
+    },
+    "uk": {
+        "track.unknown": "Невідомо",
+        "official.official": "Офіц.",
+        "official.unofficial": "Неофіц.",
+        "audio_note.clean": "🔇 Чист. звук",
+        "commentary.commentary": "💬 Коментарі",
+        "ads.ads": "📣 Реклама",
+        "edition.directors_cut": "🎬 Реж. версія",
+        "edition.extended": "🎬 Розш. версія",
+        "edition.uncut": "🎬 Повна версія",
+        "edition.theatrical": "Театр. версія",
+        "edition.combined": "⚠️ Усі серії",
+    },
+}

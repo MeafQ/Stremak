@@ -1,9 +1,9 @@
 from dataclasses import replace
 
 from streaming.base import Stream
+from main import build_binge_group
 from streaming.parsing.catalog import Lang, Studio, VoiceType
 from streaming.parsing.core import Org, OrgList, Track
-from streaming.parsing.grouping import build_binge_group
 
 
 def _stream(track: Track, *, url: str = "http://test") -> Stream:

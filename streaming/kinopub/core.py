@@ -34,9 +34,12 @@ from .models import (
 
 _log = logging.getLogger(__name__)
 
-class Config(BaseModel):
+class KinoPubSettings(BaseModel):
     token: str | None = None
     refresh_token: str | None = None
+
+    def is_configured(self) -> bool:
+        return bool(self.token)
 
 @dataclass
 class KinoPub:
@@ -48,11 +51,10 @@ class KinoPub:
     http: httpx.AsyncClient
 
     @classmethod
-    def from_config(cls, http: httpx.AsyncClient, raw: dict) -> 'KinoPub | None':
-        config = Config.model_validate(raw.get(cls.slug, {}))
-        if config.token:
-            return KinoPubPrivate(http=http, token=config.token, refresh_token=config.refresh_token or "")
-        return cls(http=http)
+    def from_settings(cls, http: httpx.AsyncClient, settings: KinoPubSettings | None) -> 'KinoPubPrivate | None':
+        if settings and settings.token:
+            return KinoPubPrivate(http=http, token=settings.token, refresh_token=settings.refresh_token or "")
+        return None
 
     @classmethod
     def get_routes(cls) -> Sequence[Route]:
@@ -116,6 +118,7 @@ class KinoPub:
     )
     _CLIENT_ID: ClassVar[str] = "appletv2"
     _CLIENT_SECRET: ClassVar[str] = "3z5124kj5liqy9gahnjr07qpj65ferl2"
+    _ENABLE_REFRESH_TOKEN_FLOW: ClassVar[bool] = False
     _USER_AGENT: ClassVar[str] = "MicroIPTV/8 CFNetwork/3860.300.31 Darwin/25.2.0"
     _DEVICE_TITLE: ClassVar[str] = "KinopubApp"
     _DEVICE_SOFTWARE: ClassVar[str] = "AppleTV (Micro IPTV 8)"
@@ -153,8 +156,9 @@ class KinoPub:
         return TokenResponse.model_validate_json(resp.text)
 
     async def refresh_access_token(self, refresh_token: str) -> TokenResponse | None:
-        return None # TODO Weird. Commenting out for now
-        # print('refresh')
+        if not self._ENABLE_REFRESH_TOKEN_FLOW:
+            _log.debug("KinoPub refresh-token flow is currently disabled")
+            return None
         resp = await self._request("POST", "/api/oauth2/device", json=self._auth_body("refresh_token", refresh_token=refresh_token))
         if resp.status_code == 400:
             return None

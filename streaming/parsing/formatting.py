@@ -3,10 +3,9 @@ from collections.abc import Mapping
 
 from languages import language_to_flag
 
+from .constants import DEFAULT_LOCALE, TRANSLATIONS
 from .models import Media
 from .values import AttrVal
-
-DEFAULT_LOCALE = "ru"
 
 
 class TranslationCatalog:
@@ -28,50 +27,7 @@ class TranslationCatalog:
         return value.display or value.id
 
 
-MESSAGES = TranslationCatalog(
-    {
-        "ru": {
-            "track.unknown": "Неизвестно",
-            "official.official": "Офиц.",
-            "official.unofficial": "Неофиц.",
-            "audio_note.clean": "🔇 Чист. звук",
-            "commentary.commentary": "💬 Комментарии",
-            "ads.ads": "📢 Реклама",
-            "edition.directors_cut": "🎬 Реж. версия",
-            "edition.extended": "🎬 Расш. версия",
-            "edition.uncut": "🎬 Полная версия",
-            "edition.theatrical": "Театр. версия",
-            "edition.combined": "⚠️ Все серии",
-        },
-        "en": {
-            "track.unknown": "Unknown",
-            "official.official": "Official",
-            "official.unofficial": "Unofficial",
-            "audio_note.clean": "🔇 Clean audio",
-            "commentary.commentary": "💬 Commentary",
-            "ads.ads": "📢 Ads",
-            "edition.directors_cut": "🎬 Director's Cut",
-            "edition.extended": "🎬 Extended Edition",
-            "edition.uncut": "🎬 Uncut",
-            "edition.theatrical": "Theatrical",
-            "edition.combined": "⚠️ All episodes",
-        },
-        "uk": {
-            "track.unknown": "Невідомо",
-            "official.official": "Офіц.",
-            "official.unofficial": "Неофіц.",
-            "audio_note.clean": "🔇 Чист. звук",
-            "commentary.commentary": "💬 Коментарі",
-            "ads.ads": "📢 Реклама",
-            "edition.directors_cut": "🎬 Реж. версія",
-            "edition.extended": "🎬 Розш. версія",
-            "edition.uncut": "🎬 Повна версія",
-            "edition.theatrical": "Театр. версія",
-            "edition.combined": "⚠️ Усі серії",
-        },
-    },
-    default_locale=DEFAULT_LOCALE,
-)
+MESSAGES = TranslationCatalog(TRANSLATIONS, default_locale=DEFAULT_LOCALE)
 
 
 def format_stream(media: Media, locale: str = DEFAULT_LOCALE) -> str:

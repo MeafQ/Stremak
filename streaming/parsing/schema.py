@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 from languages import LangCode
@@ -13,20 +13,13 @@ from .values import AttrVal, Org, OrgKind, OrgList, TrackAttrVal
 class OrgSchema:
     studio: OrgAttr
     network: OrgAttr
-    _attrs_by_name: dict[str, OrgAttr] = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "_attrs_by_name",
-            {
-                self.studio.name: self.studio,
-                self.network.name: self.network,
-            },
-        )
 
     def attr(self, name: str) -> OrgAttr | None:
-        return self._attrs_by_name.get(name)
+        if name == self.studio.name:
+            return self.studio
+        if name == self.network.name:
+            return self.network
+        return None
 
     def clone(self) -> "OrgSchema":
         return replace(self, studio=self.studio.clone(), network=self.network.clone())
@@ -51,34 +44,25 @@ class TrackSchema:
     commentary: TrackAttr[str]
     ads: TrackAttr[str]
     mature: TrackAttr[str]
-    _attrs_by_name: dict[str, TrackAttr[Any]] = field(init=False, repr=False, compare=False)
-    _org_fields: frozenset[str] = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "_attrs_by_name",
-            {
-                "lang": cast(TrackAttr[Any], self.lang),
-                "voice_type": cast(TrackAttr[Any], self.voice_type),
-                self.orgs.studio.name: cast(TrackAttr[Any], self.orgs.studio),
-                self.orgs.network.name: cast(TrackAttr[Any], self.orgs.network),
-                "official": cast(TrackAttr[Any], self.official),
-                "audio_format": cast(TrackAttr[Any], self.audio_format),
-                "audio_note": cast(TrackAttr[Any], self.audio_note),
-                "commentary": cast(TrackAttr[Any], self.commentary),
-                "ads": cast(TrackAttr[Any], self.ads),
-                "mature": cast(TrackAttr[Any], self.mature),
-            },
-        )
-        object.__setattr__(
-            self,
-            "_org_fields",
-            frozenset((self.orgs.studio.name, self.orgs.network.name)),
-        )
 
     def attr(self, name: str) -> TrackAttr[Any] | None:
-        return self._attrs_by_name.get(name)
+        if name == "lang":
+            return cast(TrackAttr[Any], self.lang)
+        if name == "voice_type":
+            return cast(TrackAttr[Any], self.voice_type)
+        if name == "official":
+            return cast(TrackAttr[Any], self.official)
+        if name == "audio_format":
+            return cast(TrackAttr[Any], self.audio_format)
+        if name == "audio_note":
+            return cast(TrackAttr[Any], self.audio_note)
+        if name == "commentary":
+            return cast(TrackAttr[Any], self.commentary)
+        if name == "ads":
+            return cast(TrackAttr[Any], self.ads)
+        if name == "mature":
+            return cast(TrackAttr[Any], self.mature)
+        return None
 
     def clone(self) -> "TrackSchema":
         return replace(
@@ -168,22 +152,17 @@ class MediaSchema:
     codec: Attr[str]
     hdr: Attr[str]
     edition: Attr[str]
-    _attrs_by_name: dict[str, Attr[Any]] = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "_attrs_by_name",
-            {
-                "quality": cast(Attr[Any], self.quality),
-                "codec": cast(Attr[Any], self.codec),
-                "hdr": cast(Attr[Any], self.hdr),
-                "edition": cast(Attr[Any], self.edition),
-            },
-        )
 
     def attr(self, name: str) -> Attr[Any] | None:
-        return self._attrs_by_name.get(name)
+        if name == "quality":
+            return cast(Attr[Any], self.quality)
+        if name == "codec":
+            return cast(Attr[Any], self.codec)
+        if name == "hdr":
+            return cast(Attr[Any], self.hdr)
+        if name == "edition":
+            return cast(Attr[Any], self.edition)
+        return None
 
     def clone(self) -> "MediaSchema":
         return replace(

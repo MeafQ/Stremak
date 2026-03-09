@@ -2,50 +2,38 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 import httpx
 from jinja2 import Environment, FileSystemLoader
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from metadata import METADATA_MODULES
-from streaming import STREAMING_MODULES
-from streaming.base import Stream, StreamingService
-from streaming.parsing.catalog import default_profile
-from streaming.parsing.core import Parser
-from streaming.parsing.formatting import DEFAULT_LOCALE
-from streaming.parsing.grouping import build_binge_group
-from utils import CORS_HEADERS, decode_config, encode_config
-
-LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
+from constants import LOG_LEVEL, MANIFEST, PLAY_CACHE_MAX_AGE, PROVIDER_TIMEOUT, STREAM_CACHE_MAX_AGE
+from config import AppConfig
+from metadata.base import MetadataClient
+from metadata.tmdb import TheMovieDB
+from streaming.base import Stream, StreamingService, select_stream_by_identity
+from streaming.filmix import Filmix
+from streaming.kinopub import KinoPub
+from streaming.parsing import DEFAULT_LOCALE, Parser
+from utils import CORS_HEADERS, decode_config, encode_config, slugify
 
 logging.basicConfig(level=LOG_LEVEL, format="%(levelname)s %(name)s: %(message)s")
 _log = logging.getLogger(__name__)
 
-PROVIDER_TIMEOUT = 10
-
-STREAM_CACHE_MAX_AGE = 60    # /stream/
-PLAY_CACHE_MAX_AGE = 60       # /play/
-
-MANIFEST = {
-    "id": "community.stremak",
-    "version": "1.0.0",
-    "name": "Stremak",
-    "description": "Streams from multiple services",
-    "catalogs": [],
-    "resources": ["stream"],
-    "types": ["movie", "series"],
-    "idPrefixes": ["tt"] # "kitsu:", "mal:"
-}
+STREAMING_PROVIDERS = (Filmix, KinoPub)
+METADATA_PROVIDERS = (TheMovieDB,)
 
 templates = Environment(
     loader=FileSystemLoader(Path(__file__).parent),
     autoescape=True,
 )
+
 
 def _parse_stremio_id(raw_id: str) -> tuple[str, int | None, int | None]:
     parts = raw_id.split(":")
@@ -53,31 +41,53 @@ def _parse_stremio_id(raw_id: str) -> tuple[str, int | None, int | None]:
     season = int(parts[1]) if len(parts) > 1 else None
     episode = int(parts[2]) if len(parts) > 2 else None
     return base_id, season, episode
-    
-def _build_metadata(http: httpx.AsyncClient, config: dict) -> dict:
-    return {
-        p.slug: client
-        for p in METADATA_MODULES
-        if (client := p.from_config(http, config.get("metadata", {}))) is not None
-    }
+
+
+def _build_metadata(http: httpx.AsyncClient, config: AppConfig) -> dict[str, MetadataClient]:
+    clients: dict[str, MetadataClient] = {}
+    if config.metadata.tmdb is not None and (client := TheMovieDB.from_settings(http, config.metadata.tmdb)) is not None:
+        clients[TheMovieDB.slug] = client
+    return clients
+
+
+def _build_streaming(http: httpx.AsyncClient, config: AppConfig) -> dict[str, StreamingService]:
+    clients: dict[str, StreamingService] = {}
+    if config.streaming.filmix is not None and (client := Filmix.from_settings(http, config.streaming.filmix)) is not None:
+        clients[Filmix.slug] = client
+    if config.streaming.kinopub is not None and (client := KinoPub.from_settings(http, config.streaming.kinopub)) is not None:
+        clients[KinoPub.slug] = client
+    return clients
+
+
+def build_binge_group(source: str, stream: Stream) -> str:
+    parts: list[str] = [source]
+
+    if stream.tracks:
+        parts.extend(stream.tracks[0].identity_tokens())
+
+    for field_info in fields(type(stream)):
+        if not field_info.metadata.get("media_field"):
+            continue
+        if value := getattr(stream, field_info.name):
+            parts.append(value.id)
+
+    return slugify("-".join(parts))
 
 
 def _select_play_stream(
     streams: list[Stream],
     play_identity: dict,
     *,
-    parser: Parser | None = None,
+    parser: Parser,
     provider_name: str,
     stremio_id: str,
 ) -> Stream | None:
-    if not streams:
-        return None
-
-    profile = parser.profile if parser is not None else default_profile
-    target = profile.media.decode_identity(play_identity)
-    required_weight, scored = target.match_candidates(streams)
-
-    if not scored:
+    selected, required_weight, top_count, strong_identity = select_stream_by_identity(
+        streams,
+        play_identity,
+        parser=parser,
+    )
+    if selected is None:
         _log.warning(
             "No play candidates matched at weight=%s for provider=%s stremio_id=%s",
             required_weight,
@@ -85,22 +95,21 @@ def _select_play_stream(
             stremio_id,
         )
         return None
-
-    scored.sort(key=lambda item: item[0], reverse=True)
-    best_score = scored[0][0]
-    top = [stream for score, stream in scored if score == best_score]
-    if len(top) > 1 and target.has_min_identity():
+    if top_count > 1 and strong_identity:
         _log.warning(
             "Play selection remained ambiguous for provider=%s stremio_id=%s candidates=%s",
             provider_name,
             stremio_id,
-            len(top),
+            top_count,
         )
-    return top[0]
+    return selected
 
 async def manifest_handler(request: Request) -> JSONResponse:
-    config = decode_config(request.path_params.get("config", ""))
-    configured = config.get("streaming") and config.get("metadata")
+    try:
+        config = AppConfig.model_validate(decode_config(request.path_params.get("config", "")))
+    except ValidationError:
+        config = None
+    configured = config is not None
     hints = {"configurable": True}
     if not configured:
         hints["configurationRequired"] = True
@@ -111,8 +120,8 @@ async def configure_handler(request: Request) -> HTMLResponse:
     template = templates.get_template("templates/configure.jinja2")
     return HTMLResponse(
         template.render(
-            services=STREAMING_MODULES,
-            metadata=METADATA_MODULES,
+            services=STREAMING_PROVIDERS,
+            metadata=METADATA_PROVIDERS,
             config=config,
             default_locale=DEFAULT_LOCALE,
         )
@@ -145,28 +154,32 @@ def enrich_streams(provider_streams: dict[str, list[Stream]]) -> dict[str, list[
 
 async def stream_handler(request: Request) -> JSONResponse:
     config_str = request.path_params.get("config", "")
-    config = decode_config(config_str)
-    locale = str(config.get("locale") or DEFAULT_LOCALE)
+    try:
+        config = AppConfig.model_validate(decode_config(config_str))
+    except ValidationError:
+        config = None
     http: httpx.AsyncClient = request.app.state.http
+    if config is None:
+        return JSONResponse({"error": "Invalid config"}, status_code=400, headers=CORS_HEADERS)
+    locale = config.locale
+    streaming_clients = _build_streaming(http, config)
+    metadata = _build_metadata(http, config)
     raw_id: str = request.path_params["stremio_id"].split(".")[0]
     base_id, season, episode = _parse_stremio_id(raw_id)
     base = str(request.base_url).rstrip("/")
-    metadata = _build_metadata(http, config)
 
-    async def _resolve(provider) -> list[Stream]:
-        client = provider.from_config(http, config.get("streaming", {}))
-        if not isinstance(client, StreamingService):
-            return []
+    async def _resolve(provider, client: StreamingService) -> list[Stream]:
         return await asyncio.wait_for(
             client.resolve_streams(base_id, metadata, season=season, episode=episode),
             timeout=PROVIDER_TIMEOUT,
         )
 
-    tasks = [_resolve(p) for p in STREAMING_MODULES]
+    tasks = [_resolve(p, streaming_clients[p.slug]) for p in STREAMING_PROVIDERS if p.slug in streaming_clients]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     raw: dict[str, list[Stream]] = {}
-    for provider, result in zip(STREAMING_MODULES, results):
+    active_providers = [p for p in STREAMING_PROVIDERS if p.slug in streaming_clients]
+    for provider, result in zip(active_providers, results):
         if isinstance(result, asyncio.TimeoutError):
             _log.warning("Provider %s timed out for %s", provider.name, raw_id)
         elif isinstance(result, Exception):
@@ -185,7 +198,7 @@ async def stream_handler(request: Request) -> JSONResponse:
 
     enriched = enrich_streams(raw)
     tagged: list[tuple[Stream, type, str, str]] = []
-    for provider in STREAMING_MODULES:
+    for provider in STREAMING_PROVIDERS:
         display_streams = enriched.get(provider.slug)
         raw_streams = raw.get(provider.slug)
         if display_streams and raw_streams:
@@ -215,24 +228,31 @@ async def stream_handler(request: Request) -> JSONResponse:
     )
 
 async def play_handler(request: Request) -> Response:    
-    config = decode_config(request.path_params["config"])
+    try:
+        config = AppConfig.model_validate(decode_config(request.path_params["config"]))
+    except ValidationError:
+        config = None
+    http: httpx.AsyncClient = request.app.state.http
+    if config is None:
+        return JSONResponse({"error": "Invalid config"}, status_code=400, headers=CORS_HEADERS)
+
+    streaming_clients = _build_streaming(http, config)
+    metadata = _build_metadata(http, config)
     provider_name: str = request.path_params["provider"]
     play_identity = decode_config(request.path_params["play_identity"])
     stremio_id: str = request.path_params["stremio_id"]
 
-    provider = next((m for m in STREAMING_MODULES if m.slug == provider_name), None)
+    provider = next((m for m in STREAMING_PROVIDERS if m.slug == provider_name), None)
     if not provider:
         _log.warning("Unknown provider '%s' for play request %s", provider_name, stremio_id)
         return JSONResponse({"error": "Provider not found"}, status_code=404, headers=CORS_HEADERS)
 
-    http: httpx.AsyncClient = request.app.state.http
-    client = provider.from_config(http, config.get("streaming", {}))
-    if not isinstance(client, StreamingService):
+    client = streaming_clients.get(provider_name)
+    if client is None:
         _log.warning("Provider %s is not configured for play request %s", provider_name, stremio_id)
         return JSONResponse({"error": "Provider not configured"}, status_code=404, headers=CORS_HEADERS)
 
     base_id, season, episode = _parse_stremio_id(stremio_id)
-    metadata = _build_metadata(http, config)
     streams = await asyncio.wait_for(
         client.resolve_streams(base_id, metadata, season=season, episode=episode),
         timeout=PROVIDER_TIMEOUT,
@@ -288,9 +308,9 @@ routes = [
     Route("/{config}/play/{provider}/{play_identity}/{stremio_id}", play_handler),
 ]
 
-for module in STREAMING_MODULES:
+for module in STREAMING_PROVIDERS:
     routes.extend(module.get_routes())
-for module in METADATA_MODULES:
+for module in METADATA_PROVIDERS:
     routes.extend(module.get_routes())
 
 @asynccontextmanager

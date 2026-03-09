@@ -1,6 +1,6 @@
 from collections.abc import Iterable
-from dataclasses import dataclass, field, replace
-from typing import Any, ClassVar, TypeVar
+from dataclasses import dataclass, field, fields, replace
+from typing import Any, TypeVar, cast
 
 from languages import LangCode
 
@@ -12,56 +12,55 @@ MediaT = TypeVar("MediaT", bound="Media")
 
 @dataclass(frozen=True, slots=True)
 class Track:
-    ORG_MATCH_WEIGHT: ClassVar[int] = 4
-    MATCH_WEIGHTS: ClassVar[dict[str, int]] = {
-        "commentary": 3,
-        "official": 2,
-        "audio_note": 2,
-        "mature": 2,
-        "lang": 1,
-        "voice_type": 1,
-        "audio_format": 0,
-        "ads": 0,
-    }
-
-    lang: TrackAttrVal[LangCode] | None = None
-    voice_type: TrackAttrVal[str] | None = None
-    orgs: OrgList = field(default_factory=OrgList)
-    official: TrackAttrVal[str] | None = None
-    audio_format: TrackAttrVal[str] | None = None
-    audio_note: TrackAttrVal[str] | None = None
-    commentary: TrackAttrVal[str] | None = None
-    ads: TrackAttrVal[str] | None = None
-    mature: TrackAttrVal[str] | None = None
+    lang: TrackAttrVal[LangCode] | None = field(default=None, metadata={"match_weight": 1})
+    voice_type: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 1})
+    orgs: OrgList = field(default_factory=OrgList, metadata={"match_weight": 4})
+    official: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 2})
+    audio_format: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 0})
+    audio_note: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 2})
+    commentary: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 3})
+    ads: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 0})
+    mature: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 2})
     index: int | None = None
 
     def score(self) -> int:
-        total = sum(value.score for field in self.MATCH_WEIGHTS if (value := getattr(self, field)) is not None)
-        return total + self.orgs.max_score()
+        total = 0
+        for field_info in fields(type(self)):
+            if "match_weight" not in field_info.metadata:
+                continue
+            value = cast(Any, getattr(self, field_info.name))
+            if value:
+                total += value.score
+        return total
 
     def identity_weight(self) -> int:
-        weight = self.ORG_MATCH_WEIGHT if self.orgs else 0
-        weight += sum(
-            match_weight
-            for field, match_weight in self.MATCH_WEIGHTS.items()
-            if match_weight > 0 and getattr(self, field) is not None
+        return sum(
+            cast(int, field_info.metadata["match_weight"])
+            for field_info in fields(type(self))
+            if cast(int, field_info.metadata.get("match_weight", 0)) > 0
+            and getattr(self, field_info.name)
         )
-        return weight
 
     def identity_tokens(self, min_weight: int = MIN_MATCH_WEIGHT) -> tuple[str, ...]:
         parts: list[str] = []
         weight = 0
-        if self.orgs:
-            parts.extend(self.orgs.identity_ids())
-            weight += self.ORG_MATCH_WEIGHT
-        for field, match_weight in self.MATCH_WEIGHTS.items():
+        ordered_fields = sorted(
+            (
+                (index, field_info)
+                for index, field_info in enumerate(fields(type(self)))
+                if "match_weight" in field_info.metadata
+            ),
+            key=lambda item: (-cast(int, item[1].metadata.get("match_weight", 0)), item[0]),
+        )
+        for _, field_info in ordered_fields:
+            match_weight = cast(int, field_info.metadata.get("match_weight", 0))
             if match_weight <= 0:
                 continue
-            if value := getattr(self, field):
-                parts.append(value.id)
+            if value := cast(Any, getattr(self, field_info.name)):
+                parts.extend(value.identity_ids())
                 weight += match_weight
-                if weight >= min_weight:
-                    break
+            if weight >= min_weight:
+                break
         if weight < min_weight and self.index is not None:
             parts.append(str(self.index))
         return tuple(parts)
@@ -76,18 +75,15 @@ class Track:
 
     def match_weight(self, other: "Track") -> int | None:
         agree = 0
-        if self.orgs and other.orgs:
-            if not self.orgs.overlaps(other.orgs):
-                return None
-            agree += self.ORG_MATCH_WEIGHT
-        for field, match_weight in self.MATCH_WEIGHTS.items():
+        for field_info in fields(type(self)):
+            match_weight = cast(int, field_info.metadata.get("match_weight", 0))
             if match_weight <= 0:
                 continue
-            mine = getattr(self, field, None)
-            theirs = getattr(other, field, None)
-            if mine is None or theirs is None:
+            mine = cast(Any, getattr(self, field_info.name))
+            theirs = cast(Any, getattr(other, field_info.name))
+            if not mine or not theirs:
                 continue
-            if mine.id != theirs.id:
+            if not mine.matches(theirs):
                 return None
             agree += match_weight
         return agree
@@ -99,42 +95,46 @@ class Track:
 
     def with_confidence(self, offset: int) -> "Track":
         changes: dict[str, Any] = {}
-        if self.orgs:
-            changes["orgs"] = self.orgs.with_confidence(offset)
-        for field in self.MATCH_WEIGHTS:
-            value = getattr(self, field)
-            if value is not None:
-                changes[field] = replace(value, confidence=value.confidence + offset)
+        for field_info in fields(type(self)):
+            if "match_weight" not in field_info.metadata:
+                continue
+            value = cast(Any, getattr(self, field_info.name))
+            if value:
+                changes[field_info.name] = value.with_confidence(offset)
         return replace(self, **changes) if changes else self
 
     def enrich_from(self, source: "Track") -> "Track":
         changes: dict[str, Any] = {}
-        if source.orgs:
-            merged = self.orgs.merged(source.orgs)
-            if merged != self.orgs:
-                changes["orgs"] = merged
-        for field in self.MATCH_WEIGHTS:
-            mine = getattr(self, field)
-            theirs = getattr(source, field)
-            if theirs is None:
+        for field_info in fields(type(self)):
+            if "match_weight" not in field_info.metadata:
                 continue
-            if mine is None or theirs.confidence > mine.confidence:
-                changes[field] = theirs
+            mine = cast(Any, getattr(self, field_info.name))
+            theirs = cast(Any, getattr(source, field_info.name))
+            if not theirs:
+                continue
+            if not mine:
+                changes[field_info.name] = theirs
+                continue
+            merged = mine.merged(theirs)
+            if merged != mine:
+                changes[field_info.name] = merged
         return replace(self, **changes) if changes else self
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Media:
-    FIELDS: ClassVar[tuple[str, ...]] = ("quality", "codec", "hdr", "edition")
-
     tracks: tuple[Track, ...] = ()
-    quality: AttrVal[str] | None = None
-    codec: AttrVal[str] | None = None
-    hdr: AttrVal[str] | None = None
-    edition: AttrVal[str] | None = None
+    quality: AttrVal[str] | None = field(default=None, metadata={"media_field": True})
+    codec: AttrVal[str] | None = field(default=None, metadata={"media_field": True})
+    hdr: AttrVal[str] | None = field(default=None, metadata={"media_field": True})
+    edition: AttrVal[str] | None = field(default=None, metadata={"media_field": True})
 
     def score(self) -> int:
-        total = sum(value.score for field in self.FIELDS if (value := getattr(self, field)) is not None)
+        total = sum(
+            value.score
+            for field_info in fields(type(self))
+            if field_info.metadata.get("media_field") and (value := getattr(self, field_info.name)) is not None
+        )
         if self.tracks:
             total += max(track.score() for track in self.tracks)
         return total
@@ -156,20 +156,20 @@ class Media:
         tracks: list[dict[str, Any]] = []
         if primary := self.primary_track():
             track_data: dict[str, Any] = {}
-            if primary.orgs:
-                track_data["orgs"] = list(primary.orgs.identity_ids())
-            track_data.update({
-                field: value.id
-                for field, match_weight in Track.MATCH_WEIGHTS.items()
-                if match_weight > 0 and (value := getattr(primary, field)) is not None
-            })
+            for field_info in fields(Track):
+                match_weight = cast(int, field_info.metadata.get("match_weight", 0))
+                if match_weight <= 0:
+                    continue
+                if value := cast(Any, getattr(primary, field_info.name)):
+                    track_data[field_info.name] = value.identity_value()
             tracks.append(track_data)
 
         identity: dict[str, object] = {"tracks": tracks}
         identity.update({
-            field: value.id
-            for field in self.FIELDS
-            if (value := getattr(self, field)) is not None
+            field_info.name: value.identity_value()
+            for field_info in fields(type(self))
+            if field_info.metadata.get("media_field")
+            and (value := getattr(self, field_info.name)) is not None
         })
         return identity
 
@@ -184,21 +184,20 @@ class Media:
                 return None
             if (track_weight := mine.match_weight(theirs)) is None:
                 return None
-            track_exact = mine.orgs.shared_count(theirs.orgs)
-            track_exact += sum(
-                1
-                for field, match_weight in Track.MATCH_WEIGHTS.items()
-                if match_weight > 0
-                and (mine_value := getattr(mine, field)) is not None
-                and (their_value := getattr(theirs, field)) is not None
-                and mine_value.id == their_value.id
+            track_exact = sum(
+                cast(Any, getattr(mine, field_info.name)).shared_count(cast(Any, getattr(theirs, field_info.name)))
+                for field_info in fields(Track)
+                if cast(int, field_info.metadata.get("match_weight", 0)) > 0
+                and getattr(mine, field_info.name)
+                and getattr(theirs, field_info.name)
             )
 
         media_exact = sum(
             1
-            for field in self.FIELDS
-            if (mine_value := getattr(self, field)) is not None
-            and (their_value := getattr(other, field)) is not None
+            for field_info in fields(type(self))
+            if field_info.metadata.get("media_field")
+            and (mine_value := getattr(self, field_info.name)) is not None
+            and (their_value := getattr(other, field_info.name)) is not None
             and mine_value.id == their_value.id
         )
 
