@@ -1,0 +1,256 @@
+<div class="card" id="kinopub-card">
+    <div class="service-header">
+        <span class="status-dot" id="kinopub-status"></span>
+        <h3>KinoPub</h3>
+        <button class="btn-text" id="kinopub-reset-btn" onclick="kinopubReset()">Сбросить</button>
+    </div>
+
+    <!-- Connected state -->
+    <div id="kinopub-connected" class="hidden">
+        <div class="user-info">
+            <div class="avatar" id="kinopub-avatar">
+                <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+            </div>
+            <div class="details">
+                <div class="login" id="kinopub-login"></div>
+                <div class="meta" id="kinopub-meta"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Input state -->
+    <div id="kinopub-input">
+        <div class="input-row">
+            <input type="text" id="kinopub-token" placeholder="Токен">
+            <button id="kinopub-check-btn" onclick="kinopubCheckToken()">Проверить</button>
+        </div>
+        <div class="hint input-error hidden" id="kinopub-error"></div>
+        <div class="divider" id="kinopub-divider">или</div>
+        <button class="btn-secondary" id="kinopub-auth-btn" style="width: 100%;" onclick="kinopubStartAuth()">Авторизовать устройство</button>
+    </div>
+
+    <!-- Auth flow state -->
+    <div id="kinopub-auth" class="hidden">
+        <div class="code" id="kinopub-user-code">----</div>
+        <div class="steps">
+            <p>1. Перейдите на <a id="kinopub-verify-link" href="#" target="_blank">страницу активации</a></p>
+            <p>2. Введите код выше</p>
+            <p>3. Дождитесь автоматической проверки</p>
+        </div>
+        <div class="poll-status" id="kinopub-poll-status">
+            <span class="spinner"></span>
+            Ожидание подтверждения...
+        </div>
+        <button class="btn-secondary" style="width: 100%; margin-top: 16px;" onclick="kinopubCancelAuth()">Отмена</button>
+    </div>
+</div>
+
+<script>
+(function() {
+    const POLL_INITIAL_DELAY = 3000;
+    const POLL_INTERVAL = 5000;
+    const POLL_MAX_DURATION = 300000;
+    const INVALID_TOKEN_MESSAGE = '\u0422\u043e\u043a\u0435\u043d \u043d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0438\u043b\u0438 \u0443\u0436\u0435 \u043d\u0435 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442.';
+    const CHECK_ERROR_MESSAGE = '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u0442\u043e\u043a\u0435\u043d.';
+
+    let pollTimer = null;
+    let countdownTimer = null;
+    let pollStartTime = null;
+    let deviceCode = null;
+
+    window.kinopubCheckToken = async function() {
+        const input = document.getElementById('kinopub-token');
+        const previousToken = services.kinopub.token || '';
+        const token = input.value.trim() || previousToken;
+        if (!token) return;
+        input.value = token;
+        services.kinopub.token = token;
+        if (token !== previousToken) {
+            services.kinopub.refresh_token = '';
+        }
+
+        try {
+            const refreshToken = services.kinopub.refresh_token || '';
+            const resp = await fetch('/api/auth/kinopub/check?token=' + encodeURIComponent(token) + '&refresh_token=' + encodeURIComponent(refreshToken));
+            if (resp.ok) {
+                const data = await resp.json();
+                services.kinopub.userInfo = data;
+                showConnected(data);
+            } else {
+                services.kinopub.userInfo = null;
+                showInput(INVALID_TOKEN_MESSAGE);
+            }
+        } catch (e) {
+            console.error('Token check failed:', e);
+            showInput(CHECK_ERROR_MESSAGE);
+        }
+        updateInstallSection();
+    };
+
+    async function kinopubStartAuth() {
+        showAuth();
+        document.getElementById('kinopub-poll-status').innerHTML =
+            '<span class="spinner"></span>Получение кода...';
+
+        try {
+            const resp = await fetch('/api/auth/kinopub/start');
+            const data = await resp.json();
+
+            deviceCode = data.device_code;
+            document.getElementById('kinopub-user-code').textContent = data.user_code;
+
+            const link = document.getElementById('kinopub-verify-link');
+            link.href = data.verification_uri;
+            link.textContent = data.verification_uri.replace(/^https?:\/\//, '');
+
+            pollStartTime = Date.now();
+            updateCountdown();
+            countdownTimer = setInterval(updateCountdown, 1000);
+
+            setTimeout(pollCheck, POLL_INITIAL_DELAY);
+        } catch (e) {
+            document.getElementById('kinopub-poll-status').innerHTML =
+                '<span style="color: #ff6b6b;">Ошибка получения кода</span>';
+        }
+    }
+    window.kinopubStartAuth = kinopubStartAuth;
+
+    function updateCountdown() {
+        if (!pollStartTime) return;
+
+        const elapsed = Date.now() - pollStartTime;
+        const remaining = Math.max(0, Math.ceil((POLL_MAX_DURATION - elapsed) / 1000));
+
+        if (remaining <= 0) {
+            stopCountdown();
+            document.getElementById('kinopub-poll-status').innerHTML =
+                '<span style="color: #ff6b6b;">Время ожидания истекло</span>';
+            return;
+        }
+
+        document.getElementById('kinopub-poll-status').innerHTML =
+            '<span class="spinner"></span>Ожидание... (' + remaining + ' сек)';
+    }
+
+    function stopCountdown() {
+        if (countdownTimer) {
+            clearInterval(countdownTimer);
+            countdownTimer = null;
+        }
+    }
+
+    async function pollCheck() {
+        if (!deviceCode) return;
+
+        const elapsed = Date.now() - pollStartTime;
+        if (elapsed > POLL_MAX_DURATION) {
+            stopCountdown();
+            document.getElementById('kinopub-poll-status').innerHTML =
+                '<span style="color: #ff6b6b;">Время ожидания истекло</span>';
+            deviceCode = null;
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/auth/kinopub/poll?code=' + encodeURIComponent(deviceCode));
+
+            if (resp.status === 202) {
+                pollTimer = setTimeout(pollCheck, POLL_INTERVAL);
+                return;
+            }
+
+            if (resp.status === 200) {
+                const data = await resp.json();
+
+                services.kinopub.token = data.access_token;
+                services.kinopub.refresh_token = data.refresh_token;
+                document.getElementById('kinopub-token').value = data.access_token;
+                deviceCode = null;
+                stopCountdown();
+
+                await kinopubCheckToken();
+                return;
+            }
+
+            throw new Error('Unexpected response: ' + resp.status);
+        } catch (e) {
+            stopCountdown();
+            document.getElementById('kinopub-poll-status').innerHTML =
+                '<span style="color: #ff6b6b;">Ошибка проверки</span>';
+        }
+    }
+
+    function kinopubCancelAuth() {
+        deviceCode = null;
+        stopCountdown();
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+        }
+        showInput();
+    }
+    window.kinopubCancelAuth = kinopubCancelAuth;
+
+    function kinopubReset() {
+        services.kinopub.token = null;
+        services.kinopub.refresh_token = null;
+        services.kinopub.userInfo = null;
+        document.getElementById('kinopub-token').value = '';
+        showInput();
+        updateInstallSection();
+    }
+    window.kinopubReset = kinopubReset;
+
+    function showConnected(info) {
+        document.getElementById('kinopub-auth').classList.add('hidden');
+        document.getElementById('kinopub-input').classList.add('hidden');
+        document.getElementById('kinopub-connected').classList.remove('hidden');
+        document.getElementById('kinopub-status').classList.add('connected');
+        document.getElementById('kinopub-reset-btn').classList.add('visible');
+        document.getElementById('kinopub-error').classList.add('hidden');
+        document.getElementById('kinopub-error').textContent = '';
+
+        if (info) {
+            const avatarEl = document.getElementById('kinopub-avatar');
+            if (info.avatar) {
+                avatarEl.innerHTML = '<img src="' + info.avatar + '" alt="" onerror="handleAvatarError(this)">';
+            } else {
+                avatarEl.innerHTML = DEFAULT_AVATAR_SVG;
+            }
+            document.getElementById('kinopub-login').textContent = info.username;
+
+            let meta = info.name && info.name !== info.username ? info.name : '';
+            if (info.subscription_active) {
+                meta += (meta ? ' \u2022 ' : '') + '\u041F\u043E\u0434\u043F\u0438\u0441\u043A\u0430 (' + info.subscription_days + ' \u0434\u043D\u0435\u0439)';
+            }
+            document.getElementById('kinopub-meta').textContent = meta;
+        }
+    }
+
+    function showInput(message = '') {
+        document.getElementById('kinopub-connected').classList.add('hidden');
+        document.getElementById('kinopub-auth').classList.add('hidden');
+        document.getElementById('kinopub-input').classList.remove('hidden');
+        document.getElementById('kinopub-status').classList.remove('connected');
+        document.getElementById('kinopub-token').value = services.kinopub.token || '';
+        document.getElementById('kinopub-reset-btn').classList.toggle('visible', Boolean(services.kinopub.token || services.kinopub.refresh_token));
+
+        const error = document.getElementById('kinopub-error');
+        if (message) {
+            error.textContent = message;
+            error.classList.remove('hidden');
+        } else {
+            error.textContent = '';
+            error.classList.add('hidden');
+        }
+    }
+
+    function showAuth() {
+        document.getElementById('kinopub-connected').classList.add('hidden');
+        document.getElementById('kinopub-input').classList.add('hidden');
+        document.getElementById('kinopub-auth').classList.remove('hidden');
+    }
+
+    showInput();
+})();
+</script>

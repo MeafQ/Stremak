@@ -1,0 +1,9 @@
+services:
+  stremak:
+    image: ${IMAGE:?Set IMAGE to ghcr.io/<owner>/<repo>:latest}
+    container_name: stremak
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-WARNING}

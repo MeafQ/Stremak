@@ -1,0 +1,85 @@
+<div class="card" id="tmdb-card">
+    <div class="service-header">
+        <span class="status-dot" id="tmdb-status"></span>
+        <h3>TMDB</h3>
+        <button class="btn-text" id="tmdb-reset-btn" onclick="tmdbReset()">Сбросить</button>
+    </div>
+
+    <!-- Connected state -->
+    <div id="tmdb-connected" class="hidden">
+        <div class="user-info">
+            <div class="details">
+                <div class="login">API подключен</div>
+                <div class="meta" id="tmdb-meta">Ключ: ••••••••</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Input state -->
+    <div id="tmdb-input">
+        <div class="input-row">
+            <input type="text" id="tmdb-api-key" placeholder="API Ключ">
+            <button id="tmdb-check-btn" onclick="tmdbCheckKey()">Проверить</button>
+        </div>
+        <div class="hint">
+            <a href="https://www.themoviedb.org/settings/api" target="_blank">Получить API ключ</a>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    window.tmdbCheckKey = async function() {
+        const apiKey = document.getElementById('tmdb-api-key').value.trim();
+        if (!apiKey) return;
+
+        document.getElementById('tmdb-check-btn').disabled = true;
+        document.getElementById('tmdb-check-btn').textContent = '...';
+
+        try {
+            const resp = await fetch(`https://api.themoviedb.org/3/configuration?api_key=${encodeURIComponent(apiKey)}`);
+            if (resp.ok) {
+                metadata.tmdb = { api_key: apiKey };
+                showConnected(apiKey);
+            } else {
+                alert('Неверный API ключ');
+            }
+        } catch (e) {
+            console.error('TMDB check failed:', e);
+            alert('Ошибка проверки');
+        } finally {
+            document.getElementById('tmdb-check-btn').disabled = false;
+            document.getElementById('tmdb-check-btn').textContent = 'Проверить';
+        }
+        updateInstallSection();
+    };
+
+    window.tmdbReset = function() {
+        metadata.tmdb = null;
+        document.getElementById('tmdb-api-key').value = '';
+        showInput();
+        updateInstallSection();
+    };
+
+    function showConnected(apiKey) {
+        document.getElementById('tmdb-input').classList.add('hidden');
+        document.getElementById('tmdb-connected').classList.remove('hidden');
+        document.getElementById('tmdb-status').classList.add('connected');
+        document.getElementById('tmdb-reset-btn').classList.add('visible');
+        document.getElementById('tmdb-meta').textContent = 'Ключ: ' + apiKey.slice(0, 4) + '••••' + apiKey.slice(-4);
+    }
+
+    function showInput() {
+        document.getElementById('tmdb-connected').classList.add('hidden');
+        document.getElementById('tmdb-input').classList.remove('hidden');
+        document.getElementById('tmdb-status').classList.remove('connected');
+        document.getElementById('tmdb-reset-btn').classList.remove('visible');
+    }
+
+    // Init from existing config
+    if (typeof metadata !== 'undefined' && metadata.tmdb?.api_key) {
+        document.getElementById('tmdb-api-key').value = metadata.tmdb.api_key;
+        showConnected(metadata.tmdb.api_key);
+    }
+})();
+</script>

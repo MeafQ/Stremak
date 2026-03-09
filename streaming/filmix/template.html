@@ -1,0 +1,247 @@
+<div class="card" id="filmix-card">
+    <div class="service-header">
+        <span class="status-dot" id="filmix-status"></span>
+        <h3>Filmix</h3>
+        <button class="btn-text" id="filmix-reset-btn" onclick="filmixReset()">Сбросить</button>
+    </div>
+
+    <!-- Connected state -->
+    <div id="filmix-connected" class="hidden">
+        <div class="user-info">
+            <div class="avatar" id="filmix-avatar">
+                <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+            </div>
+            <div class="details">
+                <div class="login" id="filmix-login"></div>
+                <div class="meta" id="filmix-meta"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Input state -->
+    <div id="filmix-input">
+        <div class="input-row">
+            <input type="text" id="filmix-token" placeholder="Токен">
+            <button id="filmix-check-btn" onclick="filmixCheckToken()">Проверить</button>
+        </div>
+        <div class="hint input-error hidden" id="filmix-error"></div>
+        <div class="divider" id="filmix-divider">или</div>
+        <button class="btn-secondary" id="filmix-auth-btn" style="width: 100%;" onclick="filmixStartAuth()">Авторизовать устройство</button>
+    </div>
+
+    <!-- Auth flow state -->
+    <div id="filmix-auth" class="hidden">
+        <div class="code" id="filmix-user-code">----</div>
+        <div class="steps">
+            <p>1. Перейдите на <a href="https://filmix.my/consoles" target="_blank">filmix.my/consoles</a></p>
+            <p>2. Введите код выше</p>
+            <p>3. Дождитесь автоматической проверки</p>
+        </div>
+        <div class="poll-status" id="filmix-poll-status">
+            <span class="spinner"></span>
+            Ожидание подтверждения...
+        </div>
+        <button class="btn-secondary" style="width: 100%; margin-top: 16px;" onclick="filmixCancelAuth()">Отмена</button>
+    </div>
+</div>
+
+<script>
+(function() {
+    const POLL_INITIAL_DELAY = 3000;
+    const POLL_INTERVAL = 5000;
+    const POLL_MAX_DURATION = 300000;
+    const INVALID_TOKEN_MESSAGE = '\u0422\u043e\u043a\u0435\u043d \u043d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0438\u043b\u0438 \u0443\u0436\u0435 \u043d\u0435 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442.';
+    const CHECK_ERROR_MESSAGE = '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u0442\u043e\u043a\u0435\u043d.';
+
+    let pollTimer = null;
+    let countdownTimer = null;
+    let pollStartTime = null;
+    let deviceToken = null;
+
+    window.filmixCheckToken = async function() {
+        const input = document.getElementById('filmix-token');
+        const token = input.value.trim() || services.filmix.token;
+        if (!token) return;
+        input.value = token;
+        services.filmix.token = token;
+
+        try {
+            const resp = await fetch('/api/auth/filmix/check?token=' + encodeURIComponent(token));
+            if (resp.ok) {
+                const data = await resp.json();
+                services.filmix.userInfo = data;
+                showConnected(data);
+            } else {
+                services.filmix.userInfo = null;
+                showInput(INVALID_TOKEN_MESSAGE);
+            }
+        } catch (e) {
+            console.error('Token check failed:', e);
+            showInput(CHECK_ERROR_MESSAGE);
+        }
+        updateInstallSection();
+    };
+
+    async function filmixStartAuth() {
+        showAuth();
+        document.getElementById('filmix-poll-status').innerHTML =
+            '<span class="spinner"></span>Получение кода...';
+
+        try {
+            const resp = await fetch('/api/auth/filmix/start');
+            const data = await resp.json();
+
+            deviceToken = data.device_token;
+            document.getElementById('filmix-user-code').textContent = data.user_code;
+
+            pollStartTime = Date.now();
+            updateCountdown();
+            countdownTimer = setInterval(updateCountdown, 1000);
+
+            setTimeout(pollCheck, POLL_INITIAL_DELAY);
+        } catch (e) {
+            document.getElementById('filmix-poll-status').innerHTML =
+                '<span style="color: #ff6b6b;">Ошибка получения кода</span>';
+        }
+    }
+    window.filmixStartAuth = filmixStartAuth;
+
+    function updateCountdown() {
+        if (!pollStartTime) return;
+
+        const elapsed = Date.now() - pollStartTime;
+        const remaining = Math.max(0, Math.ceil((POLL_MAX_DURATION - elapsed) / 1000));
+
+        if (remaining <= 0) {
+            stopCountdown();
+            document.getElementById('filmix-poll-status').innerHTML =
+                '<span style="color: #ff6b6b;">Время ожидания истекло</span>';
+            return;
+        }
+
+        document.getElementById('filmix-poll-status').innerHTML =
+            '<span class="spinner"></span>Ожидание... (' + remaining + ' сек)';
+    }
+
+    function stopCountdown() {
+        if (countdownTimer) {
+            clearInterval(countdownTimer);
+            countdownTimer = null;
+        }
+    }
+
+    async function pollCheck() {
+        if (!deviceToken) return;
+
+        const elapsed = Date.now() - pollStartTime;
+        if (elapsed > POLL_MAX_DURATION) {
+            stopCountdown();
+            document.getElementById('filmix-poll-status').innerHTML =
+                '<span style="color: #ff6b6b;">Время ожидания истекло</span>';
+            deviceToken = null;
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/auth/filmix/check?token=' + encodeURIComponent(deviceToken));
+
+            if (resp.ok) {
+                const data = await resp.json();
+                services.filmix.token = deviceToken;
+                services.filmix.userInfo = data;
+                document.getElementById('filmix-token').value = deviceToken;
+                deviceToken = null;
+                stopCountdown();
+                showConnected(data);
+                updateInstallSection();
+                return;
+            }
+
+            if (resp.status === 401) {
+                pollTimer = setTimeout(pollCheck, POLL_INTERVAL);
+                return;
+            }
+
+            throw new Error('Unexpected response');
+        } catch (e) {
+            stopCountdown();
+            document.getElementById('filmix-poll-status').innerHTML =
+                '<span style="color: #ff6b6b;">Ошибка проверки</span>';
+        }
+    }
+
+    function filmixCancelAuth() {
+        deviceToken = null;
+        stopCountdown();
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+        }
+        showInput();
+    }
+    window.filmixCancelAuth = filmixCancelAuth;
+
+    function filmixReset() {
+        services.filmix.token = null;
+        services.filmix.userInfo = null;
+        document.getElementById('filmix-token').value = '';
+        showInput();
+        updateInstallSection();
+    }
+    window.filmixReset = filmixReset;
+
+    function showConnected(info) {
+        document.getElementById('filmix-auth').classList.add('hidden');
+        document.getElementById('filmix-input').classList.add('hidden');
+        document.getElementById('filmix-connected').classList.remove('hidden');
+        document.getElementById('filmix-status').classList.add('connected');
+        document.getElementById('filmix-reset-btn').classList.add('visible');
+        document.getElementById('filmix-error').classList.add('hidden');
+        document.getElementById('filmix-error').textContent = '';
+
+        if (info) {
+            const avatarEl = document.getElementById('filmix-avatar');
+            if (info.avatar) {
+                avatarEl.innerHTML = '<img src="' + info.avatar + '" alt="" onerror="handleAvatarError(this)">';
+            } else {
+                avatarEl.innerHTML = DEFAULT_AVATAR_SVG;
+            }
+            document.getElementById('filmix-login').textContent = info.login;
+
+            let meta = info.email || '';
+            if (info.is_pro_plus) {
+                meta += ' • PRO+ (' + info.pro_days_left + ' дней)';
+            } else if (info.is_pro) {
+                meta += ' • PRO (' + info.pro_days_left + ' дней)';
+            }
+            document.getElementById('filmix-meta').textContent = meta;
+        }
+    }
+
+    function showInput(message = '') {
+        document.getElementById('filmix-connected').classList.add('hidden');
+        document.getElementById('filmix-auth').classList.add('hidden');
+        document.getElementById('filmix-input').classList.remove('hidden');
+        document.getElementById('filmix-status').classList.remove('connected');
+        document.getElementById('filmix-token').value = services.filmix.token || '';
+        document.getElementById('filmix-reset-btn').classList.toggle('visible', Boolean(services.filmix.token));
+
+        const error = document.getElementById('filmix-error');
+        if (message) {
+            error.textContent = message;
+            error.classList.remove('hidden');
+        } else {
+            error.textContent = '';
+            error.classList.add('hidden');
+        }
+    }
+
+    function showAuth() {
+        document.getElementById('filmix-connected').classList.add('hidden');
+        document.getElementById('filmix-input').classList.add('hidden');
+        document.getElementById('filmix-auth').classList.remove('hidden');
+    }
+
+    showInput();
+})();
+</script>
