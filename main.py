@@ -21,6 +21,7 @@ from constants import (
     PROVIDER_TIMEOUT,
     STREAM_CACHE_MAX_AGE,
 )
+from forwarded import wrap_proxy_headers
 from metadata.base import MetadataClient
 from metadata.tmdb import TheMovieDB
 from streaming.base import Stream, StreamingService, select_stream_by_identity
@@ -35,12 +36,12 @@ _log = logging.getLogger(__name__)
 
 STREAMING_PROVIDERS = (Filmix, KinoPub)
 METADATA_PROVIDERS = (TheMovieDB,)
+PROXY_TRUSTED_HOSTS = os.getenv("PROXY_TRUSTED_HOSTS", "*")
 
 templates = Environment(
     loader=FileSystemLoader(Path(__file__).parent),
     autoescape=True,
 )
-
 
 def _parse_stremio_id(raw_id: str) -> tuple[str, int | None, int | None]:
     parts = raw_id.split(":")
@@ -315,7 +316,10 @@ async def lifespan(app):
         app.state.http = http
         yield
 
-app = Starlette(routes=routes, lifespan=lifespan)
+app = wrap_proxy_headers(
+    Starlette(routes=routes, lifespan=lifespan),
+    trusted_hosts=PROXY_TRUSTED_HOSTS,
+)
 
 if __name__ == "__main__":
     import uvicorn

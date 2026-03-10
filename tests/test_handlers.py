@@ -2,19 +2,28 @@ import re
 from typing import cast
 
 import httpx
+import main as main_module
 
 from starlette.testclient import TestClient
 
 from config import AppConfig
 from main import _build_streaming, app, encode_config
 from streaming.base import Stream
-from streaming.parsing.catalog import get_profile
+from streaming.parsing.catalog import get_parser, get_profile
 from streaming.parsing.core import Track
-from streaming.parsing.specs import DEFAULT_PARSING_SPECS
+from streaming.parsing.specs import DEFAULT_PARSING_SPECS, ParsingSpecs
 
 
 def _test_http() -> httpx.AsyncClient:
     return cast(httpx.AsyncClient, object())
+
+
+class _FakeStreamingService:
+    specs: ParsingSpecs = DEFAULT_PARSING_SPECS
+    parser = get_parser()
+
+    async def resolve_streams(self, *args, **kwargs) -> list[Stream]:
+        return [Stream(url="https://provider.example/video.m3u8")]
 
 
 def _config_with_lang_scores(scores: dict[str, int]) -> AppConfig:
@@ -210,6 +219,28 @@ def test_configure_applies_parsing_specs_without_runtime_placeholders():
 
     assert response.status_code == 200
     assert re.search(r'"default_scores"\s*:\s*\{[^}]*"ru"\s*:\s*3500', response.text)
+
+
+def test_stream_uses_forwarded_https_headers_for_play_urls(monkeypatch):
+    config = encode_config({
+        "streaming": {"filmix": {"token": "test"}},
+        "metadata": {"tmdb": {"api_key": "test"}},
+    })
+    monkeypatch.setattr(main_module, "_build_streaming", lambda http, config: {"filmix": _FakeStreamingService()})
+    monkeypatch.setattr(main_module, "_build_metadata", lambda http, config: {})
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/{config}/stream/movie/tt0944947",
+            headers={
+                "host": "internal:8000",
+                "x-forwarded-host": "addon.example.com",
+                "x-forwarded-proto": "https",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["streams"][0]["url"].startswith("https://addon.example.com/")
 
 
 def test_stream_score_uses_configured_language_scores():
