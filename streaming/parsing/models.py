@@ -1,27 +1,77 @@
 from collections.abc import Iterable
 from dataclasses import dataclass, field, fields, replace
-from typing import Any, TypeVar, cast
+from functools import cache
+from typing import Any, ClassVar, TypeVar, cast
 
 from languages import LangCode
 
 from .registry import Marker, TrackAttr
-from .values import MIN_MATCH_WEIGHT, AttrVal, OrgList, TrackAttrVal
+from .values import MIN_MATCH_WEIGHT, AttrVal, OrgKind, OrgList, TrackAttrVal
 
 MediaT = TypeVar("MediaT", bound="Media")
 
 
+@cache
+def _attr_fields(owner: type[Any]) -> dict[str, str]:
+    return {
+        cast(str, field_info.metadata["attr_id"]): field_info.name
+        for field_info in fields(owner)
+        if "attr_id" in field_info.metadata
+    }
+
+
+@cache
+def _marker_attr_kinds(owner: type[Any]) -> dict[str, OrgKind]:
+    return {
+        attr_id: OrgKind(kind)
+        for field_info in fields(owner)
+        for attr_id, kind in cast(dict[str, OrgKind | str], field_info.metadata.get("marker_attr_kinds", {})).items()
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class Track:
-    lang: TrackAttrVal[LangCode] | None = field(default=None, metadata={"match_weight": 1})
-    voice_type: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 1})
-    orgs: OrgList = field(default_factory=OrgList, metadata={"match_weight": 4})
-    official: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 2})
-    audio_format: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 0})
-    audio_note: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 2})
-    commentary: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 3})
-    ads: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 0})
-    mature: TrackAttrVal[str] | None = field(default=None, metadata={"match_weight": 2})
+    PARSING_GROUP: ClassVar[str] = "track"
+
+    lang: TrackAttrVal[LangCode] | None = field(default=None, metadata={"attr_id": "lang", "match_weight": 1})
+    voice_type: TrackAttrVal[str] | None = field(default=None, metadata={"attr_id": "voice_type", "match_weight": 1})
+    orgs: OrgList = field(
+        default_factory=OrgList,
+        metadata={
+            "match_weight": 4,
+            "marker_attr_kinds": {
+                "studio": OrgKind.STUDIO,
+                "network": OrgKind.NETWORK,
+            },
+        },
+    )
+    official: TrackAttrVal[str] | None = field(default=None, metadata={"attr_id": "official", "match_weight": 2})
+    audio_format: TrackAttrVal[str] | None = field(default=None, metadata={"attr_id": "audio_format", "match_weight": 0})
+    audio_note: TrackAttrVal[str] | None = field(default=None, metadata={"attr_id": "audio_note", "match_weight": 2})
+    commentary: TrackAttrVal[str] | None = field(default=None, metadata={"attr_id": "commentary", "match_weight": 3})
+    ads: TrackAttrVal[str] | None = field(default=None, metadata={"attr_id": "ads", "match_weight": 0})
+    mature: TrackAttrVal[str] | None = field(default=None, metadata={"attr_id": "mature", "match_weight": 2})
     index: int | None = None
+
+    @classmethod
+    def attr_ids(cls) -> tuple[str, ...]:
+        return tuple(cls.attr_fields())
+
+    @classmethod
+    def attr_fields(cls) -> dict[str, str]:
+        return dict(_attr_fields(cls))
+
+    @classmethod
+    def attr_field_name(cls, attr_id: str) -> str | None:
+        return _attr_fields(cls).get(attr_id)
+
+    @classmethod
+    def marker_attr_kinds(cls) -> dict[str, OrgKind]:
+        return dict(_marker_attr_kinds(cls))
+
+    @classmethod
+    def marker_attr_ids(cls) -> tuple[str, ...]:
+        return (*cls.attr_ids(), *cls.marker_attr_kinds())
 
     def score(self) -> int:
         total = 0
@@ -123,18 +173,43 @@ class Track:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Media:
+    PARSING_GROUP: ClassVar[str] = "media"
+
     tracks: tuple[Track, ...] = ()
-    quality: AttrVal[str] | None = field(default=None, metadata={"media_field": True})
-    codec: AttrVal[str] | None = field(default=None, metadata={"media_field": True})
-    hdr: AttrVal[str] | None = field(default=None, metadata={"media_field": True})
-    edition: AttrVal[str] | None = field(default=None, metadata={"media_field": True})
+    quality: AttrVal[str] | None = field(default=None, metadata={"attr_id": "quality"})
+    codec: AttrVal[str] | None = field(default=None, metadata={"attr_id": "codec"})
+    hdr: AttrVal[str] | None = field(default=None, metadata={"attr_id": "hdr"})
+    edition: AttrVal[str] | None = field(default=None, metadata={"attr_id": "edition"})
+
+    @classmethod
+    def attr_ids(cls) -> tuple[str, ...]:
+        return tuple(cls.attr_fields())
+
+    @classmethod
+    def attr_fields(cls) -> dict[str, str]:
+        return dict(_attr_fields(cls))
+
+    @classmethod
+    def attr_field_name(cls, attr_id: str) -> str | None:
+        return _attr_fields(cls).get(attr_id)
+
+    @classmethod
+    def marker_attr_kinds(cls) -> dict[str, OrgKind]:
+        return {}
+
+    @classmethod
+    def marker_attr_ids(cls) -> tuple[str, ...]:
+        return (*cls.attr_ids(), *cls.marker_attr_kinds())
+
+    def attr_items(self) -> tuple[tuple[str, AttrVal[str]], ...]:
+        return tuple(
+            (field_name, cast(AttrVal[str], value))
+            for field_name in type(self).attr_fields().values()
+            if (value := getattr(self, field_name)) is not None
+        )
 
     def score(self) -> int:
-        total = sum(
-            value.score
-            for field_info in fields(type(self))
-            if field_info.metadata.get("media_field") and (value := getattr(self, field_info.name)) is not None
-        )
+        total = sum(value.score for _, value in self.attr_items())
         if self.tracks:
             total += max(track.score() for track in self.tracks)
         return total
@@ -166,12 +241,17 @@ class Media:
 
         identity: dict[str, object] = {"tracks": tracks}
         identity.update({
-            field_info.name: value.identity_value()
-            for field_info in fields(type(self))
-            if field_info.metadata.get("media_field")
-            and (value := getattr(self, field_info.name)) is not None
+            field_name: value.identity_value()
+            for field_name, value in self.attr_items()
         })
         return identity
+
+    def group_tokens(self) -> tuple[str, ...]:
+        parts: list[str] = []
+        if primary := self.primary_track():
+            parts.extend(primary.identity_tokens())
+        parts.extend(value.id for _, value in self.attr_items())
+        return tuple(parts)
 
     def match_score(self, other: "Media") -> tuple[int, int, int] | None:
         track_weight = 0
@@ -194,10 +274,9 @@ class Media:
 
         media_exact = sum(
             1
-            for field_info in fields(type(self))
-            if field_info.metadata.get("media_field")
-            and (mine_value := getattr(self, field_info.name)) is not None
-            and (their_value := getattr(other, field_info.name)) is not None
+            for field_name in type(self).attr_fields().values()
+            if (mine_value := getattr(self, field_name)) is not None
+            and (their_value := getattr(other, field_name)) is not None
             and mine_value.id == their_value.id
         )
 

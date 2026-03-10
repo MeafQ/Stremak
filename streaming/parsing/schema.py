@@ -1,35 +1,53 @@
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import Any, cast
 
 from languages import LangCode
 
 from .models import Media, Track
 from .registry import Attr, OrgAttr, TrackAttr
+from .specs import MarkerSpec, ParsingSpecs, ValueSpec
 from .values import AttrVal, Org, OrgKind, OrgList, TrackAttrVal
 
 
 @dataclass(frozen=True, slots=True)
 class OrgSchema:
-    studio: OrgAttr
-    network: OrgAttr
+    attrs: dict[str, OrgAttr]
+
+    @classmethod
+    def from_marker_specs(
+        cls,
+        attr_kinds: Mapping[str, OrgKind],
+        marker_specs: Mapping[str, MarkerSpec],
+    ) -> "OrgSchema":
+        attrs = {
+            attr_id: OrgAttr(attr_id, kind=kind)
+            for attr_id, kind in attr_kinds.items()
+        }
+        for attr_id, attr in attrs.items():
+            attr.add_specs(_collect_org_value_specs(marker_specs, attr_id))
+        return cls(attrs)
+
+    def __getitem__(self, name: str) -> OrgAttr:
+        return self.attrs[name]
+
+    def values(self) -> tuple[OrgAttr, ...]:
+        return tuple(self.attrs.values())
 
     def attr(self, name: str) -> OrgAttr | None:
-        if name == self.studio.name:
-            return self.studio
-        if name == self.network.name:
-            return self.network
-        return None
+        return self.attrs.get(name)
 
     def clone(self) -> "OrgSchema":
-        return replace(self, studio=self.studio.clone(), network=self.network.clone())
+        return replace(self, attrs={name: attr.clone() for name, attr in self.attrs.items()})
 
     def decode(self, value_id: str, *, kind: OrgKind | str | None = None) -> Org:
         target = OrgKind(kind) if kind is not None else None
-        if target != OrgKind.NETWORK and (value := self.studio.get(value_id)):
-            return self.studio.to_org(value)
-        if target != OrgKind.STUDIO and (value := self.network.get(value_id)):
-            return self.network.to_org(value, hidden=False)
+        candidates = (self.attrs.get(target.value),) if target is not None else self.attrs.values()
+        for attr in candidates:
+            if attr is None:
+                continue
+            if value := attr.get(value_id):
+                return attr.to_org(value, hidden=False)
         return Org(id=value_id, label=value_id, kind=target or OrgKind.UNKNOWN)
 
 
@@ -45,38 +63,42 @@ class TrackSchema:
     ads: TrackAttr[str]
     mature: TrackAttr[str]
 
+    @classmethod
+    def from_specs(cls, specs: ParsingSpecs) -> "TrackSchema":
+        attrs = {
+            attr_id: TrackAttr(attr_id)
+            for attr_id in Track.attr_ids()
+        }
+        for attr_id, attr in attrs.items():
+            attr.add_specs(specs.attr(attr_id).values)
+        orgs = OrgSchema.from_marker_specs(Track.marker_attr_kinds(), specs.markers_for(Track))
+        return cls.from_attrs(attrs, orgs=orgs)
+
+    @classmethod
+    def from_attrs(
+        cls,
+        attrs: Mapping[str, TrackAttr[Any]],
+        *,
+        orgs: OrgSchema,
+    ) -> "TrackSchema":
+        values = {
+            field_name: cast(TrackAttr[Any], attrs[attr_id])
+            for attr_id, field_name in Track.attr_fields().items()
+        }
+        return cls(orgs=orgs, **values)
+
     def attr(self, name: str) -> TrackAttr[Any] | None:
-        if name == "lang":
-            return cast(TrackAttr[Any], self.lang)
-        if name == "voice_type":
-            return cast(TrackAttr[Any], self.voice_type)
-        if name == "official":
-            return cast(TrackAttr[Any], self.official)
-        if name == "audio_format":
-            return cast(TrackAttr[Any], self.audio_format)
-        if name == "audio_note":
-            return cast(TrackAttr[Any], self.audio_note)
-        if name == "commentary":
-            return cast(TrackAttr[Any], self.commentary)
-        if name == "ads":
-            return cast(TrackAttr[Any], self.ads)
-        if name == "mature":
-            return cast(TrackAttr[Any], self.mature)
-        return None
+        field_name = Track.attr_field_name(name)
+        if field_name is None:
+            return None
+        return cast(TrackAttr[Any], getattr(self, field_name))
 
     def clone(self) -> "TrackSchema":
-        return replace(
-            self,
-            lang=self.lang.clone(),
-            voice_type=self.voice_type.clone(),
-            orgs=self.orgs.clone(),
-            official=self.official.clone(),
-            audio_format=self.audio_format.clone(),
-            audio_note=self.audio_note.clone(),
-            commentary=self.commentary.clone(),
-            ads=self.ads.clone(),
-            mature=self.mature.clone(),
-        )
+        updates = {
+            field_info.name: getattr(self, field_info.name).clone()
+            for field_info in fields(type(self))
+        }
+        return replace(self, **updates)
 
     def decode_identity(self, data: Mapping[str, object]) -> Track | None:
         track_fields: dict[str, Any] = {}
@@ -116,7 +138,7 @@ class TrackSchema:
             current = org
             if org.kind == OrgKind.UNKNOWN and org.confidence < 0:
                 raw = org.id
-                for attr in (self.orgs.studio, self.orgs.network):
+                for attr in self.orgs.values():
                     known = normalize(attr.name, raw)
                     if not isinstance(known, TrackAttrVal):
                         known = attr.find(raw)
@@ -153,26 +175,42 @@ class MediaSchema:
     hdr: Attr[str]
     edition: Attr[str]
 
+    @classmethod
+    def from_specs(cls, specs: ParsingSpecs) -> "MediaSchema":
+        track = TrackSchema.from_specs(specs)
+        attrs = {
+            attr_id: Attr(attr_id)
+            for attr_id in Media.attr_ids()
+        }
+        for attr_id, attr in attrs.items():
+            attr.add_specs(specs.attr(attr_id).values)
+        return cls.from_attrs(attrs, track=track)
+
+    @classmethod
+    def from_attrs(
+        cls,
+        attrs: Mapping[str, Attr[Any]],
+        *,
+        track: TrackSchema,
+    ) -> "MediaSchema":
+        values = {
+            field_name: cast(Attr[Any], attrs[attr_id])
+            for attr_id, field_name in Media.attr_fields().items()
+        }
+        return cls(track=track, **values)
+
     def attr(self, name: str) -> Attr[Any] | None:
-        if name == "quality":
-            return cast(Attr[Any], self.quality)
-        if name == "codec":
-            return cast(Attr[Any], self.codec)
-        if name == "hdr":
-            return cast(Attr[Any], self.hdr)
-        if name == "edition":
-            return cast(Attr[Any], self.edition)
-        return None
+        field_name = Media.attr_field_name(name)
+        if field_name is None:
+            return None
+        return cast(Attr[Any], getattr(self, field_name))
 
     def clone(self) -> "MediaSchema":
-        return replace(
-            self,
-            track=self.track.clone(),
-            quality=self.quality.clone(),
-            codec=self.codec.clone(),
-            hdr=self.hdr.clone(),
-            edition=self.edition.clone(),
-        )
+        updates = {
+            field_info.name: getattr(self, field_info.name).clone()
+            for field_info in fields(type(self))
+        }
+        return replace(self, **updates)
 
     def decode_identity(self, data: Mapping[str, object]) -> Media:
         raw_track = None
@@ -194,3 +232,26 @@ class MediaSchema:
                 media_fields[field_name] = attr.get(value_id) or AttrVal(id=value_id, label=value_id)
 
         return Media(tracks=(track,) if track else (), **media_fields)
+
+
+def _collect_org_value_specs(
+    marker_specs: Mapping[str, MarkerSpec],
+    field_name: str,
+) -> dict[str, ValueSpec]:
+    collected: dict[str, ValueSpec] = {}
+    for marker_spec in marker_specs.values():
+        spec = marker_spec.attrs.get(field_name)
+        if spec is None:
+            continue
+
+        value_spec = ValueSpec(
+            score=0 if spec.score is None else spec.score,
+            label=spec.label,
+            msgid=spec.msgid,
+            hidden=False if spec.hidden is None else spec.hidden,
+        )
+        existing = collected.get(spec.id)
+        if existing is not None and existing != value_spec:
+            raise ValueError(f"Conflicting {field_name} spec for '{spec.id}'")
+        collected[spec.id] = value_spec
+    return collected

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from streaming.filmix.core import FilmixPrivate
+from streaming.filmix.core import Filmix, FilmixPrivate
 
 
 def _key(attr):
@@ -240,7 +240,7 @@ def test_parse_voiceover(label, expected_tracks, expected_tech):
 
 
 def test_parse_track_keeps_multiple_orgs_in_single_track_mode():
-    track = FilmixPrivate.parser.parse_track("LostFilm MVO MVO Amedia")
+    track = Filmix.build_parser().parse_track("LostFilm MVO MVO Amedia")
 
     assert track.voice_type and track.voice_type.id == "MVO"
     assert _org_ids(track) == ("LostFilm", "Amedia")

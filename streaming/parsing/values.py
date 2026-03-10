@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, ClassVar, Generic, Self, TypeVar
@@ -36,6 +36,12 @@ class AttrVal(Generic[IdT]):
     def identity_value(self) -> IdT:
         return self.id
 
+    def identity_ids(self) -> tuple[str, ...]:
+        return (self.id,)
+
+    def preference_score(self, scores: Mapping[str, int]) -> int:
+        return max((scores.get(value_id, self.score) for value_id in self.identity_ids()), default=self.score)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True, eq=False)
 class TrackAttrVal(AttrVal[TrackIdT], Generic[TrackIdT]):
@@ -52,9 +58,6 @@ class TrackAttrVal(AttrVal[TrackIdT], Generic[TrackIdT]):
         if self.anchored:
             return self
         return replace(self, anchored=True)
-
-    def identity_ids(self) -> tuple[str, ...]:
-        return (self.id,)
 
     def matches(self, other: "TrackAttrVal[Any]") -> bool:
         return self.id == other.id
@@ -129,6 +132,9 @@ class OrgList:
 
     def identity_value(self) -> list[str]:
         return list(self.identity_ids())
+
+    def preference_score(self, scores: Mapping[str, int]) -> int:
+        return max((scores.get(org.id, org.score) for org in self.items), default=self.score)
 
     def with_confidence(self, offset: int) -> "OrgList":
         return OrgList(tuple(replace(org, confidence=org.confidence + offset) for org in self.items))

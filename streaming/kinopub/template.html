@@ -65,6 +65,8 @@
         if (!token) return;
         input.value = token;
         services.kinopub.token = token;
+        services.kinopub.verified = false;
+        const requestId = ++services.kinopub.checkRequestId;
         if (token !== previousToken) {
             services.kinopub.refresh_token = '';
         }
@@ -72,16 +74,21 @@
         try {
             const refreshToken = services.kinopub.refresh_token || '';
             const resp = await fetch('/api/auth/kinopub/check?token=' + encodeURIComponent(token) + '&refresh_token=' + encodeURIComponent(refreshToken));
+            if (requestId !== services.kinopub.checkRequestId) return;
             if (resp.ok) {
                 const data = await resp.json();
                 services.kinopub.userInfo = data;
+                services.kinopub.verified = true;
                 showConnected(data);
             } else {
                 services.kinopub.userInfo = null;
+                services.kinopub.verified = false;
                 showInput(INVALID_TOKEN_MESSAGE);
             }
         } catch (e) {
+            if (requestId !== services.kinopub.checkRequestId) return;
             console.error('Token check failed:', e);
+            services.kinopub.verified = false;
             showInput(CHECK_ERROR_MESSAGE);
         }
         updateInstallSection();
@@ -195,6 +202,8 @@
         services.kinopub.token = null;
         services.kinopub.refresh_token = null;
         services.kinopub.userInfo = null;
+        services.kinopub.verified = false;
+        services.kinopub.checkRequestId += 1;
         document.getElementById('kinopub-token').value = '';
         showInput();
         updateInstallSection();

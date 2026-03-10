@@ -1,11 +1,14 @@
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
-from typing import Generic, Self, cast
+from typing import TYPE_CHECKING, Generic, Self, cast
 
 from rapidfuzz import fuzz
 
 from .values import AttrVal, IdT, Org, OrgKind, OrgList, TrackAttrVal, TrackIdT, ValueT
+
+if TYPE_CHECKING:
+    from .specs import ValueSpec
 
 
 class Registry(Generic[IdT, ValueT]):
@@ -65,6 +68,16 @@ class Attr(Registry[IdT, AttrVal[IdT]], Generic[IdT]):
             ),
         )
 
+    def add_specs(self, value_specs: Mapping[IdT, "ValueSpec"]) -> None:
+        for value_id, spec in value_specs.items():
+            self.add(
+                value_id,
+                score=spec.score,
+                label=spec.label,
+                msgid=spec.msgid,
+                hidden=spec.hidden,
+            )
+
 
 class TrackAttr(Registry[TrackIdT, TrackAttrVal[TrackIdT]], Generic[TrackIdT]):
     __slots__ = ()
@@ -93,6 +106,16 @@ class TrackAttr(Registry[TrackIdT, TrackAttrVal[TrackIdT]], Generic[TrackIdT]):
                 anchored=anchored,
             ),
         )
+
+    def add_specs(self, value_specs: Mapping[TrackIdT, "ValueSpec"]) -> None:
+        for value_id, spec in value_specs.items():
+            self.add(
+                value_id,
+                score=spec.score,
+                label=spec.label,
+                msgid=spec.msgid,
+                hidden=spec.hidden,
+            )
 
 
 class OrgAttr(TrackAttr[str]):

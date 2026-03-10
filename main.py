@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from dataclasses import fields, replace
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -13,14 +13,21 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from constants import LOG_LEVEL, MANIFEST, PLAY_CACHE_MAX_AGE, PROVIDER_TIMEOUT, STREAM_CACHE_MAX_AGE
-from config import AppConfig
+from config import AppConfig, ParsingConfig
+from constants import (
+    LOG_LEVEL,
+    MANIFEST,
+    PLAY_CACHE_MAX_AGE,
+    PROVIDER_TIMEOUT,
+    STREAM_CACHE_MAX_AGE,
+)
 from metadata.base import MetadataClient
 from metadata.tmdb import TheMovieDB
 from streaming.base import Stream, StreamingService, select_stream_by_identity
 from streaming.filmix import Filmix
 from streaming.kinopub import KinoPub
-from streaming.parsing import DEFAULT_LOCALE, Parser
+from streaming.parsing import Parser
+from streaming.parsing.specs import DEFAULT_PARSING_SPECS
 from utils import CORS_HEADERS, decode_config, encode_config, slugify
 
 logging.basicConfig(level=LOG_LEVEL, format="%(levelname)s %(name)s: %(message)s")
@@ -52,36 +59,17 @@ def _build_metadata(http: httpx.AsyncClient, config: AppConfig) -> dict[str, Met
 
 def _build_streaming(http: httpx.AsyncClient, config: AppConfig) -> dict[str, StreamingService]:
     clients: dict[str, StreamingService] = {}
-    if config.streaming.filmix is not None and (client := Filmix.from_settings(http, config.streaming.filmix)) is not None:
+    if config.streaming.filmix is not None and (
+        client := Filmix.from_settings(http, config.streaming.filmix, parsing_specs=config.parsing.specs)
+    ) is not None:
         clients[Filmix.slug] = client
-    if config.streaming.kinopub is not None and (client := KinoPub.from_settings(http, config.streaming.kinopub)) is not None:
+    if config.streaming.kinopub is not None and (
+        client := KinoPub.from_settings(http, config.streaming.kinopub, parsing_specs=config.parsing.specs)
+    ) is not None:
         clients[KinoPub.slug] = client
     return clients
 
-
-def build_binge_group(source: str, stream: Stream) -> str:
-    parts: list[str] = [source]
-
-    if stream.tracks:
-        parts.extend(stream.tracks[0].identity_tokens())
-
-    for field_info in fields(type(stream)):
-        if not field_info.metadata.get("media_field"):
-            continue
-        if value := getattr(stream, field_info.name):
-            parts.append(value.id)
-
-    return slugify("-".join(parts))
-
-
-def _select_play_stream(
-    streams: list[Stream],
-    play_identity: dict,
-    *,
-    parser: Parser,
-    provider_name: str,
-    stremio_id: str,
-) -> Stream | None:
+def _select_play_stream(streams: list[Stream], play_identity: dict, *, parser: Parser, provider_name: str, stremio_id: str) -> Stream | None:
     selected, required_weight, top_count, strong_identity = select_stream_by_identity(
         streams,
         play_identity,
@@ -117,13 +105,19 @@ async def manifest_handler(request: Request) -> JSONResponse:
 
 async def configure_handler(request: Request) -> HTMLResponse:
     config = decode_config(request.path_params.get("config", ""))
+    parsing_specs = DEFAULT_PARSING_SPECS
+    if isinstance(config, dict):
+        try:
+            parsing_specs = ParsingConfig.model_validate(config.get("parsing")).effective_specs()
+        except ValidationError:
+            pass
     template = templates.get_template("templates/configure.jinja2")
     return HTMLResponse(
         template.render(
             services=STREAMING_PROVIDERS,
             metadata=METADATA_PROVIDERS,
             config=config,
-            default_locale=DEFAULT_LOCALE,
+            parsing_specs=parsing_specs.model_dump(mode="json"),
         )
     )
     
@@ -161,7 +155,6 @@ async def stream_handler(request: Request) -> JSONResponse:
     http: httpx.AsyncClient = request.app.state.http
     if config is None:
         return JSONResponse({"error": "Invalid config"}, status_code=400, headers=CORS_HEADERS)
-    locale = config.locale
     streaming_clients = _build_streaming(http, config)
     metadata = _build_metadata(http, config)
     raw_id: str = request.path_params["stremio_id"].split(".")[0]
@@ -206,18 +199,21 @@ async def stream_handler(request: Request) -> JSONResponse:
                 (
                     display_stream,
                     provider,
-                    build_binge_group(provider.slug, raw_stream),
+                    slugify("-".join((provider.slug, *raw_stream.group_tokens()))),
                     encode_config(raw_stream.identity()),
                 )
                 for display_stream, raw_stream in zip(display_streams, raw_streams)
             )
-    tagged.sort(key=lambda x: x[0].score(), reverse=True)
+    tagged.sort(
+        key=lambda x: x[0].score(),
+        reverse=True,
+    )
 
     all_streams: list[dict] = []
     for s, provider, group, play_identity in tagged:
         all_streams.append({
             "name": s.display_name(provider.name),
-            "description": s.format(locale=locale),
+            "description": s.format(specs=streaming_clients[provider.slug].specs),
             "url": f"{base}/{config_str}/play/{provider.slug}/{play_identity}/{raw_id}",
             "behaviorHints": {"bingeGroup": group},
         })
@@ -265,7 +261,7 @@ async def play_handler(request: Request) -> Response:
     selected = _select_play_stream(
         streams,
         play_identity,
-        parser=provider.parser,
+        parser=client.parser,
         provider_name=provider_name,
         stremio_id=stremio_id,
     )
@@ -277,7 +273,7 @@ async def play_handler(request: Request) -> Response:
         selected = _select_play_stream(
             fresh_streams,
             play_identity,
-            parser=provider.parser,
+            parser=client.parser,
             provider_name=provider_name,
             stremio_id=stremio_id,
         )

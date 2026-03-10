@@ -1,55 +1,74 @@
 from streaming.base import Stream
-from streaming.parsing.catalog import Edition, Lang, Official, VoiceType
+from streaming.parsing.catalog import default_profile
 from streaming.parsing.core import Track
 from streaming.parsing.formatting import MESSAGES
+from streaming.parsing.specs import DEFAULT_PARSING_SPECS
+
+LANG = default_profile.track.lang
+VOICE_TYPE = default_profile.track.voice_type
+OFFICIAL = default_profile.track.official
+EDITION = default_profile.media.edition
+
+
+def _specs_with_lang_scores(scores: dict[str, int]):
+    return DEFAULT_PARSING_SPECS.overlay({
+            "attrs": {
+                "lang": {
+                    "values": {
+                        lang: {"score": score}
+                        for lang, score in scores.items()
+                    },
+                },
+            },
+        })
 
 
 def test_stream_format_uses_default_russian_labels():
     stream = Stream(
         url="http://test",
-        tracks=(Track(lang=Lang["ru"], voice_type=VoiceType["DUB"], official=Official["official"]),),
-        edition=Edition["directors_cut"],
+        tracks=(Track(lang=LANG["ru"], voice_type=VOICE_TYPE["DUB"], official=OFFICIAL["official"]),),
+        edition=EDITION["directors_cut"],
     )
 
-    formatted = stream.format()
+    formatted = stream.format(specs=_specs_with_lang_scores({"ru": 3000, "uk": 2000, "en": 1000}))
 
-    assert "Офиц." in formatted
-    assert "Реж. версия" in formatted
+    assert MESSAGES["ru"]["official.official"] in formatted
+    assert MESSAGES["ru"]["edition.directors_cut"] in formatted
 
 
 def test_stream_format_translates_known_labels_to_english():
     stream = Stream(
         url="http://test",
-        tracks=(Track(lang=Lang["ru"], voice_type=VoiceType["DUB"], official=Official["official"]),),
-        edition=Edition["directors_cut"],
+        tracks=(Track(lang=LANG["ru"], voice_type=VOICE_TYPE["DUB"], official=OFFICIAL["official"]),),
+        edition=EDITION["directors_cut"],
     )
 
-    formatted = stream.format(locale="en")
+    formatted = stream.format(specs=_specs_with_lang_scores({"en": 3000, "ru": 2000, "uk": 1000}))
 
-    assert "Official" in formatted
-    assert "Director's Cut" in formatted
+    assert MESSAGES["ru"]["official.official"] in formatted
+    assert MESSAGES["en"]["edition.directors_cut"] in formatted
 
 
 def test_stream_format_translates_known_labels_to_ukrainian():
     stream = Stream(
         url="http://test",
-        tracks=(Track(lang=Lang["uk"], voice_type=VoiceType["DUB"], official=Official["official"]),),
-        edition=Edition["directors_cut"],
+        tracks=(Track(lang=LANG["uk"], voice_type=VOICE_TYPE["DUB"], official=OFFICIAL["official"]),),
+        edition=EDITION["directors_cut"],
     )
 
-    formatted = stream.format(locale="uk")
+    formatted = stream.format(specs=_specs_with_lang_scores({"uk": 3000, "ru": 2000, "en": 1000}))
 
-    assert "Офіц." in formatted
-    assert "Реж. версія" in formatted
+    assert MESSAGES["uk"]["official.official"] in formatted
+    assert MESSAGES["uk"]["edition.directors_cut"] in formatted
 
 
 def test_stream_format_handles_missing_language():
     stream = Stream(
         url="http://test",
-        tracks=(Track(voice_type=VoiceType["DUB"], official=Official["official"]),),
+        tracks=(Track(voice_type=VOICE_TYPE["DUB"], official=OFFICIAL["official"]),),
     )
 
-    formatted = stream.format()
+    formatted = stream.format(specs=_specs_with_lang_scores({"ru": 3000, "uk": 2000, "en": 1000}))
 
     assert "❓" in formatted
 

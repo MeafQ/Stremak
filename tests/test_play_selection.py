@@ -3,9 +3,16 @@ import logging
 from main import _select_play_stream
 from streaming.base import Stream
 from streaming.filmix import Filmix
-from streaming.parsing.catalog import Codec, Lang, Quality, Studio, VoiceType
+from streaming.parsing.catalog import default_profile
 from streaming.parsing.core import Org, OrgList, Track
 from utils import decode_config, encode_config
+
+PARSER = Filmix.build_parser()
+LANG = default_profile.track.lang
+STUDIO = default_profile.track.orgs["studio"]
+VOICE_TYPE = default_profile.track.voice_type
+QUALITY = default_profile.media.quality
+CODEC = default_profile.media.codec
 
 
 def make_stream(
@@ -18,16 +25,16 @@ def make_stream(
     return Stream(
         url=url,
         tracks=(track,),
-        quality=Quality[quality] if quality else None,
-        codec=Codec[codec] if codec else None,
+        quality=QUALITY[quality] if quality else None,
+        codec=CODEC[codec] if codec else None,
     )
 
 
 def make_lostfilm_track() -> Track:
     return Track(
-        lang=Lang["ru"],
-        orgs=OrgList((Org.from_value(Studio["LostFilm"], kind="studio"),)),
-        voice_type=VoiceType["MVO"],
+        lang=LANG["ru"],
+        orgs=OrgList((Org.from_value(STUDIO["LostFilm"], kind="studio"),)),
+        voice_type=VOICE_TYPE["MVO"],
     )
 
 
@@ -58,7 +65,7 @@ def test_play_selection_survives_stream_reordering():
     selected = _select_play_stream(
         fresh_streams,
         play_identity,
-        parser=Filmix.parser,
+        parser=PARSER,
         provider_name="filmix",
         stremio_id="tt0944947:1:6",
     )
@@ -96,7 +103,7 @@ def test_play_selection_uses_media_fields_to_break_ties_without_warning(caplog):
         selected = _select_play_stream(
             fresh_streams,
             play_identity,
-            parser=Filmix.parser,
+            parser=PARSER,
             provider_name="filmix",
             stremio_id="tt0944947:1:6",
         )
@@ -134,7 +141,7 @@ def test_play_selection_logs_only_when_strong_candidates_remain_ambiguous(caplog
         selected = _select_play_stream(
             fresh_streams,
             play_identity,
-            parser=Filmix.parser,
+            parser=PARSER,
             provider_name="filmix",
             stremio_id="tt0944947:1:6",
         )

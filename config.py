@@ -1,6 +1,9 @@
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Any
+
+from pydantic import BaseModel, Field, model_validator
 
 from metadata.tmdb import TMDBSettings
+from streaming.parsing.specs import DEFAULT_PARSING_SPECS, ParsingSpecs
 from streaming.filmix import FilmixSettings
 from streaming.kinopub import KinoPubSettings
 
@@ -24,8 +27,20 @@ class MetadataConfig(BaseModel):
     tmdb: TMDBSettings | None = None
 
 
+class ParsingConfig(BaseModel):
+    specs: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize(cls, value: object) -> object:
+        return {} if value is None else value
+
+    def effective_specs(self, base: ParsingSpecs = DEFAULT_PARSING_SPECS) -> ParsingSpecs:
+        return base.overlay(self.specs)
+
+
 class AppConfig(BaseModel):
-    locale: str
+    parsing: ParsingConfig = Field(default_factory=ParsingConfig)
     streaming: StreamingConfig = Field(default_factory=StreamingConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
 
@@ -40,16 +55,9 @@ class AppConfig(BaseModel):
             "metadata": _normalize_provider_section(value.get("metadata")),
         }
 
-    @field_validator("locale")
-    @classmethod
-    def _validate_locale(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("locale is required")
-        return value
-
     @model_validator(mode="after")
     def _require_services(self) -> "AppConfig":
+        self.parsing.effective_specs()
         if not _has_streaming_service(self.streaming):
             raise ValueError("At least one streaming service is required")
         if not _has_metadata_service(self.metadata):

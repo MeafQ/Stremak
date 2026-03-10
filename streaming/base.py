@@ -9,7 +9,8 @@ from starlette.routing import Route
 from metadata.base import MetadataClient
 
 from .parsing.core import Media, Parser
-from .parsing.formatting import DEFAULT_LOCALE, format_stream
+from .parsing.formatting import format_stream
+from .parsing.specs import DEFAULT_PARSING_SPECS, ParsingSpecs
 
 
 class Matchable(Protocol):
@@ -29,8 +30,8 @@ _M = TypeVar("_M", bound=Matchable)
 class Stream(Media):
     url: str
 
-    def format(self, *, locale: str = DEFAULT_LOCALE) -> str:
-        return format_stream(self, locale=locale)
+    def format(self, *, specs: ParsingSpecs = DEFAULT_PARSING_SPECS) -> str:
+        return format_stream(self, specs=specs)
 
     def display_name(self, source: str) -> str:
         return source
@@ -70,13 +71,15 @@ class StreamingModule(Protocol):
     slug: ClassVar[str]
     template: ClassVar[str]
     name: ClassVar[str]
-    parser: ClassVar[Parser]
 
     @classmethod
     def get_routes(cls) -> Sequence[Route]: ...
 
 @runtime_checkable
 class StreamingService(StreamingModule, Protocol):
+    specs: ParsingSpecs
+    parser: Parser
+
     async def resolve_streams(
         self,
         base_id: str,

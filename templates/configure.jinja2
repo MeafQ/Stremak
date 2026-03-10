@@ -190,6 +190,65 @@
             height: 1px;
             background: #444;
         }
+        .priority-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .priority-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 12px;
+            border: 1px solid #444;
+            border-radius: 8px;
+            background: #1a1a2e;
+            transition: border-color 0.15s, background 0.15s, transform 0.15s;
+        }
+        .priority-item.dragging {
+            opacity: 0.65;
+            transform: scale(0.99);
+        }
+        .priority-item.drag-over {
+            border-color: #7b2cbf;
+            background: #21213a;
+        }
+        .priority-label {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+        .priority-code {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 42px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: #35355c;
+            color: #d7c7ff;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+        }
+        .priority-name {
+            font-weight: 600;
+        }
+        .priority-handle {
+            color: #888;
+            cursor: grab;
+            font-size: 18px;
+            user-select: none;
+        }
+        .priority-item.dragging .priority-handle {
+            cursor: grabbing;
+        }
+        .priority-buttons {
+            display: flex;
+            gap: 6px;
+        }
         @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
@@ -198,13 +257,25 @@
 
     <script>
         const baseUrl = window.location.origin;
-        const defaultLocale = {{ default_locale|tojson }};
+        const parsingSpecs = {{ parsing_specs|tojson }};
+        const audioLanguages = parsingSpecs.attrs.lang.ui_values;
+        const supportedAudioLangs = Object.keys(audioLanguages);
+        const initialLanguageScores = parsingSpecs.attrs.lang.default_scores;
         const DEFAULT_AVATAR_SVG = '<svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>';
-        let locale = {{ config.get('locale', default_locale)|tojson }};
+        let draggedAudioLang = null;
+        const currentLanguageScores = {
+            ...initialLanguageScores,
+            ...Object.fromEntries(
+                Object.entries({{ config.get('parsing', {}).get('specs', {}).get('attrs', {}).get('lang', {}).get('values', {})|tojson }})
+                    .map(([lang, override]) => [lang, override.score])
+                    .filter(([, score]) => score !== undefined && score !== null),
+            ),
+        };
+        let audioPriority = deriveAudioPriority(currentLanguageScores);
 
         const services = {
             {% for service in services %}
-            {{ service.slug }}: { ...{{ config.get('streaming', {}).get(service.slug, {})|tojson }}, userInfo: null },
+            {{ service.slug }}: { ...{{ config.get('streaming', {}).get(service.slug, {})|tojson }}, userInfo: null, verified: false, checkRequestId: 0 },
             {% endfor %}
         };
 
@@ -213,10 +284,38 @@
             {{ meta.slug }}: {{ config.get('metadata', {}).get(meta.slug)|tojson|default('null') }},
             {% endfor %}
         };
+        for (const [key, value] of Object.entries(metadata)) {
+            if (value) {
+                metadata[key] = { ...value, verified: false };
+            }
+        }
+
+        function deriveAudioPriority(languageScores) {
+            if (!languageScores || typeof languageScores !== 'object') {
+                return [...supportedAudioLangs];
+            }
+
+            const ordered = [...supportedAudioLangs].sort((left, right) => {
+                const diff = Number(languageScores[right] ?? 0) - Number(languageScores[left] ?? 0);
+                if (diff !== 0) return diff;
+                return supportedAudioLangs.indexOf(left) - supportedAudioLangs.indexOf(right);
+            });
+
+            return ordered;
+        }
+
+        function buildLanguageScores() {
+            const scores = {};
+            const orderedScores = Object.values(initialLanguageScores).sort((left, right) => right - left);
+            audioPriority.forEach((lang, index) => {
+                scores[lang] = orderedScores[index] ?? 0;
+            });
+            return scores;
+        }
 
         function updateInstallSection() {
-            const hasService = Object.values(services).some(s => s.token);
-            const hasMetadata = Object.values(metadata).some(m => m);
+            const hasService = Object.values(services).some(s => s.verified);
+            const hasMetadata = Object.values(metadata).some(m => m?.verified);
 
             if (!hasService || !hasMetadata) {
                 document.getElementById('install-section').classList.add('hidden');
@@ -226,13 +325,33 @@
 
             document.getElementById('install-section').classList.remove('hidden');
 
-            const config = { locale, streaming: {}, metadata: {} };
+            const languageScores = buildLanguageScores();
+            const config = { streaming: {}, metadata: {} };
+            const languageOverrides = Object.fromEntries(
+                Object.entries(languageScores)
+                    .filter(([lang, score]) => score !== initialLanguageScores[lang])
+                    .map(([lang, score]) => [lang, { score }]),
+            );
+            if (Object.keys(languageOverrides).length > 0) {
+                config.parsing = {
+                    specs: {
+                        attrs: {
+                            lang: {
+                                values: languageOverrides,
+                            },
+                        },
+                    },
+                };
+            }
             for (const [key, svc] of Object.entries(services)) {
-                const {userInfo, ...svcConfig} = svc;
-                if (svc.token) config.streaming[key] = svcConfig;
+                const { userInfo, verified, checkRequestId, ...svcConfig } = svc;
+                if (verified) config.streaming[key] = svcConfig;
             }
             for (const [key, meta] of Object.entries(metadata)) {
-                if (meta) config.metadata[key] = meta;
+                if (meta?.verified) {
+                    const { verified, ...metaConfig } = meta;
+                    config.metadata[key] = metaConfig;
+                }
             }
 
             const configStr = btoa(JSON.stringify(config)).replace(/=+$/, '');
@@ -256,20 +375,80 @@
             btn.classList.add('copied');
         }
 
-        function updateLocale(value) {
-            locale = value || defaultLocale;
+        function moveAudioPriority(index, direction) {
+            const next = index + direction;
+            if (next < 0 || next >= audioPriority.length) return;
+            [audioPriority[index], audioPriority[next]] = [audioPriority[next], audioPriority[index]];
+            renderAudioPriority();
             updateInstallSection();
+        }
+
+        function moveAudioPriorityTo(fromIndex, toIndex) {
+            if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+            const [lang] = audioPriority.splice(fromIndex, 1);
+            audioPriority.splice(toIndex, 0, lang);
+            renderAudioPriority();
+            updateInstallSection();
+        }
+
+        function renderAudioPriority() {
+            const root = document.getElementById('audio-priority-list');
+            if (!root) return;
+            root.innerHTML = '';
+
+            audioPriority.forEach((lang, index) => {
+                const label = audioLanguages[lang] || { code: lang.toUpperCase(), label: lang.toUpperCase() };
+                const item = document.createElement('div');
+                item.className = 'priority-item';
+                item.draggable = true;
+                item.innerHTML = `
+                    <div class="priority-label">
+                        <span class="priority-handle" title="Drag to reorder">≡</span>
+                        <span class="priority-code">${label.code}</span>
+                        <span class="priority-name">${label.label}</span>
+                    </div>
+                    <div class="priority-buttons">
+                        <button type="button" class="btn-secondary btn-small" ${index === 0 ? 'disabled' : ''}>↑</button>
+                        <button type="button" class="btn-secondary btn-small" ${index === audioPriority.length - 1 ? 'disabled' : ''}>↓</button>
+                    </div>
+                `;
+                item.addEventListener('dragstart', () => {
+                    draggedAudioLang = lang;
+                    item.classList.add('dragging');
+                });
+                item.addEventListener('dragend', () => {
+                    draggedAudioLang = null;
+                    item.classList.remove('dragging');
+                    root.querySelectorAll('.priority-item').forEach(node => node.classList.remove('drag-over'));
+                });
+                item.addEventListener('dragover', event => {
+                    if (draggedAudioLang === null || draggedAudioLang === lang) return;
+                    event.preventDefault();
+                    item.classList.add('drag-over');
+                });
+                item.addEventListener('dragleave', () => {
+                    item.classList.remove('drag-over');
+                });
+                item.addEventListener('drop', event => {
+                    if (draggedAudioLang === null) return;
+                    event.preventDefault();
+                    item.classList.remove('drag-over');
+                    moveAudioPriorityTo(audioPriority.indexOf(draggedAudioLang), index);
+                });
+                const buttons = item.querySelectorAll('button');
+                buttons[0].addEventListener('click', () => moveAudioPriority(index, -1));
+                buttons[1].addEventListener('click', () => moveAudioPriority(index, 1));
+                root.appendChild(item);
+            });
         }
     </script>
 
     <div class="card">
         <div class="service-header">
-            <h3>Language</h3>
+            <h3>Приоритет аудио</h3>
         </div>
-        <select id="locale-select" onchange="updateLocale(this.value)">
-            <option value="ru">Русский</option>
-            <option value="en">English</option>
-        </select>
+        <div class="hint">Перетаскивайте языки, чтобы менять их порядок, или используйте кнопки со стрелками.</div>
+        <div id="audio-priority-list" class="priority-list" style="margin-top: 12px;"></div>
     </div>
 
     {% for service in services %}
@@ -290,7 +469,7 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('locale-select').value = locale;
+            renderAudioPriority();
             {% for service in services %}
             if (services.{{ service.slug }}.token) {
                 window['{{ service.slug }}CheckToken']?.();

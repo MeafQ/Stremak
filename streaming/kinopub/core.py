@@ -3,6 +3,7 @@ import random
 import re
 import string
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import ClassVar, Sequence
 
@@ -15,8 +16,9 @@ from starlette.routing import Route
 from languages import LangCode, to_alpha2
 from metadata.base import MetadataClient
 from streaming.base import Stream, best_match, is_readable
-from streaming.parsing.catalog import Lang, VoiceType, default_profile
+from streaming.parsing.catalog import get_parser
 from streaming.parsing.core import AttrVal, Parser, Track
+from streaming.parsing.specs import DEFAULT_PARSING_SPECS, ParsingSpecs
 from utils import CORS_HEADERS, cached, truncate_query
 
 from .models import (
@@ -46,14 +48,36 @@ class KinoPub:
     slug: ClassVar[str] = "kinopub"
     template: ClassVar[str] = "streaming/kinopub/template.html"
     name: ClassVar[str] = "KinoPub"
-    profile = default_profile
-    parser: ClassVar[Parser] = profile.build_parser()
+    parsing_patch: ClassVar[dict[str, object]] = {}
     http: httpx.AsyncClient
 
     @classmethod
-    def from_settings(cls, http: httpx.AsyncClient, settings: KinoPubSettings | None) -> 'KinoPubPrivate | None':
+    def build_specs(cls, parsing_specs: Mapping[str, object] | None = None) -> ParsingSpecs:
+        return DEFAULT_PARSING_SPECS.overlay(cls.parsing_patch).overlay(parsing_specs)
+
+    @classmethod
+    def build_parser(cls, parsing_specs: Mapping[str, object] | None = None) -> Parser:
+        return get_parser(cls.build_specs(parsing_specs))
+
+    @classmethod
+    def from_settings(
+        cls,
+        http: httpx.AsyncClient,
+        settings: KinoPubSettings | None,
+        *,
+        parsing_specs: Mapping[str, object] | None = None,
+    ) -> 'KinoPubPrivate | None':
         if settings and settings.token:
-            return KinoPubPrivate(http=http, token=settings.token, refresh_token=settings.refresh_token or "")
+            client = KinoPubPrivate(
+                http=http,
+                token=settings.token,
+                refresh_token=settings.refresh_token or "",
+            )
+            specs = cls.build_specs(parsing_specs)
+            if specs != client.specs:
+                client.specs = specs
+                client.parser = get_parser(specs)
+            return client
         return None
 
     @classmethod
@@ -196,6 +220,8 @@ class KinoPub:
 @dataclass
 class KinoPubPrivate(KinoPub):
     language: ClassVar[LangCode] = 'ru'
+    specs: ParsingSpecs = field(default_factory=KinoPub.build_specs, init=False)
+    parser: Parser = field(default_factory=KinoPub.build_parser, init=False)
     token: str = field(repr=False, kw_only=True)
     refresh_token: str = field(default="", repr=False, kw_only=True)
 
@@ -284,29 +310,32 @@ class KinoPubPrivate(KinoPub):
         resp.raise_for_status()
         return ItemResponse.model_validate_json(resp.text).item
 
-    @classmethod
-    def _audio_to_track(cls, audio: AudioTrack) -> Track:
-        track = cls.parser.parse_track(audio.author.title) if audio.author and audio.author.title else Track()
+    def _audio_to_track(self, audio: AudioTrack) -> Track:
+        track = self.parser.parse_track(audio.author.title) if audio.author and audio.author.title else Track()
+        track_schema = self.parser.profile.track
         lang_code = to_alpha2(audio.lang)
         updates: dict[str, object] = {'index': audio.index}
-        if lang_code and (lang := Lang.get(lang_code)):
+        if lang_code and (lang := track_schema.lang.get(lang_code)):
             updates['lang'] = lang
-        if audio.type and audio.type.short_title and (vt := cls.parser.normalize("voice_type", audio.type.short_title)):
+        if audio.type and audio.type.short_title and (vt := self.parser.normalize("voice_type", audio.type.short_title)):
             updates['voice_type'] = vt
-        if audio.codec and (af := cls.parser.normalize("audio_format", audio.codec)):
+        if audio.codec and (af := self.parser.normalize("audio_format", audio.codec)):
             updates['audio_format'] = af
         return replace(track, **updates)
 
-    @classmethod
-    def _infer_languages(cls, tracks: list[Track], *, original_lang: LangCode) -> list[Track]:
+    def _infer_languages(self, tracks: list[Track], *, original_lang: LangCode) -> list[Track]:
         if len(tracks) < 2:
             return tracks
 
+        track_schema = self.parser.profile.track
         result = list(tracks)
         if result[0].lang is None:
-            result[0] = result[0].with_language(cls.language, lang_attr=Lang)
+            result[0] = result[0].with_language(self.language, lang_attr=track_schema.lang)
         if len(result) == 2 and result[1].lang is None:
-            result[1] = result[1].with_language(original_lang, lang_attr=Lang).with_original(voice_type_attr=VoiceType)
+            result[1] = result[1].with_language(
+                original_lang,
+                lang_attr=track_schema.lang,
+            ).with_original(voice_type_attr=track_schema.voice_type)
         return result
 
     def _build_streams(self, audios: list[AudioTrack], files: list[VideoFile], *, edition: AttrVal | None = None, original_lang: LangCode) -> list[Stream]:

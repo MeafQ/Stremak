@@ -5,7 +5,6 @@
         <button class="btn-text" id="tmdb-reset-btn" onclick="tmdbReset()">Сбросить</button>
     </div>
 
-    <!-- Connected state -->
     <div id="tmdb-connected" class="hidden">
         <div class="user-info">
             <div class="details">
@@ -15,7 +14,6 @@
         </div>
     </div>
 
-    <!-- Input state -->
     <div id="tmdb-input">
         <div class="input-row">
             <input type="text" id="tmdb-api-key" placeholder="API Ключ">
@@ -29,7 +27,7 @@
 
 <script>
 (function() {
-    window.tmdbCheckKey = async function() {
+    window.tmdbCheckKey = async function(silent = false) {
         const apiKey = document.getElementById('tmdb-api-key').value.trim();
         if (!apiKey) return;
 
@@ -39,14 +37,22 @@
         try {
             const resp = await fetch(`https://api.themoviedb.org/3/configuration?api_key=${encodeURIComponent(apiKey)}`);
             if (resp.ok) {
-                metadata.tmdb = { api_key: apiKey };
+                metadata.tmdb = { api_key: apiKey, verified: true };
                 showConnected(apiKey);
             } else {
-                alert('Неверный API ключ');
+                metadata.tmdb = { api_key: apiKey, verified: false };
+                showInput();
+                if (!silent) {
+                    alert('Неверный API ключ');
+                }
             }
         } catch (e) {
             console.error('TMDB check failed:', e);
-            alert('Ошибка проверки');
+            metadata.tmdb = { api_key: apiKey, verified: false };
+            showInput();
+            if (!silent) {
+                alert('Ошибка проверки');
+            }
         } finally {
             document.getElementById('tmdb-check-btn').disabled = false;
             document.getElementById('tmdb-check-btn').textContent = 'Проверить';
@@ -76,10 +82,9 @@
         document.getElementById('tmdb-reset-btn').classList.remove('visible');
     }
 
-    // Init from existing config
     if (typeof metadata !== 'undefined' && metadata.tmdb?.api_key) {
         document.getElementById('tmdb-api-key').value = metadata.tmdb.api_key;
-        showConnected(metadata.tmdb.api_key);
+        tmdbCheckKey(true);
     }
 })();
 </script>

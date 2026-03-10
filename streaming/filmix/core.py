@@ -1,5 +1,6 @@
 ﻿import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import ClassVar, Sequence
 
@@ -12,8 +13,9 @@ from starlette.routing import Route
 from languages import LangCode
 from metadata.base import MetadataClient
 from streaming.base import Stream, best_match, is_readable
-from streaming.parsing.catalog import Edition, Lang, VoiceType, default_profile
-from streaming.parsing.core import AttrVal, Marker, Parser, Track
+from streaming.parsing.catalog import get_parser
+from streaming.parsing.core import AttrVal, Parser, Track
+from streaming.parsing.specs import DEFAULT_PARSING_SPECS, ParsingSpecs
 from utils import CORS_HEADERS, cached, truncate_query
 
 from .models import (
@@ -41,12 +43,20 @@ class Filmix:
     slug: ClassVar[str] = "filmix"
     template: ClassVar[str]  = "streaming/filmix/template.html"
     name: ClassVar[str] = "Filmix"
-    profile = default_profile.extend_track(
-        [Marker(r"\+UA\b", blocked=("studio",), lang=Lang["uk"].anchor(), voice_type=VoiceType["DUB"].anchor())],
-        isolate=True,
-    )
-    parser: ClassVar[Parser] = profile.build_parser()
-
+    parsing_patch: ClassVar[dict[str, object]] = {
+        "markers": {
+            "track": {
+                "filmix_ua_dub": {
+                    "pattern": r"\+UA\b",
+                    "blocked": ("studio",),
+                    "attrs": {
+                        "lang": {"id": "uk", "anchored": True},
+                        "voice_type": {"id": "DUB", "anchored": True},
+                    },
+                },
+            },
+        },
+    }
     _BASE_URL: ClassVar[str] = "https://filmix.dev/api/v7"
     _BASE_PARAMS: ClassVar[dict[str, str]] = {
         "user_dev_apk": "1.0.4.27",
@@ -60,9 +70,28 @@ class Filmix:
     http: httpx.AsyncClient
 
     @classmethod
-    def from_settings(cls, http: httpx.AsyncClient, settings: FilmixSettings | None) -> 'FilmixPrivate | None':
+    def build_specs(cls, parsing_specs: Mapping[str, object] | None = None) -> ParsingSpecs:
+        return DEFAULT_PARSING_SPECS.overlay(cls.parsing_patch).overlay(parsing_specs)
+
+    @classmethod
+    def build_parser(cls, parsing_specs: Mapping[str, object] | None = None) -> Parser:
+        return get_parser(cls.build_specs(parsing_specs))
+
+    @classmethod
+    def from_settings(
+        cls,
+        http: httpx.AsyncClient,
+        settings: FilmixSettings | None,
+        *,
+        parsing_specs: Mapping[str, object] | None = None,
+    ) -> 'FilmixPrivate | None':
         if settings and settings.token:
-            return FilmixPrivate(http=http, token=settings.token)
+            client = FilmixPrivate(http=http, token=settings.token)
+            specs = cls.build_specs(parsing_specs)
+            if specs != client.specs:
+                client.specs = specs
+                client.parser = get_parser(specs)
+            return client
         return None
 
     @classmethod
@@ -113,6 +142,8 @@ _PART_RE = re.compile(r'\b(?:сер[ияию]\w*|part)\s*(\d+)', re.I)
 @dataclass
 class FilmixPrivate(Filmix):
     language: ClassVar[LangCode] = 'ru'
+    specs: ParsingSpecs = field(default_factory=Filmix.build_specs, init=False)
+    parser: Parser = field(default_factory=Filmix.build_parser, init=False)
     token: str = field(repr=False, kw_only=True)
 
     def cache_scope_key(self) -> tuple[str, str]:
@@ -164,17 +195,25 @@ class FilmixPrivate(Filmix):
             return None
         return stripped
 
-    @classmethod
-    def _parse_voiceover(cls, label: str, *, original_lang: LangCode):
-        result = cls.parser.parse_label(label)
+    @staticmethod
+    def _parse_voiceover(
+        label: str,
+        *,
+        original_lang: LangCode,
+        parser: Parser | None = None,
+        language: LangCode = "ru",
+    ):
+        active_parser = Filmix.build_parser() if parser is None else parser
+        result = active_parser.parse_label(label)
+        track_schema = active_parser.profile.track
 
         tracks: list[Track] = []
         for track in result.tracks:
             if track.lang is None:
-                if track.voice_type == VoiceType["OG"]:
-                    track = track.with_language(original_lang, lang_attr=Lang)
+                if track.voice_type == track_schema.voice_type["OG"]:
+                    track = track.with_language(original_lang, lang_attr=track_schema.lang)
                 else:
-                    track = track.with_language(cls.language, lang_attr=Lang)
+                    track = track.with_language(language, lang_attr=track_schema.lang)
             tracks.append(track)
 
         return replace(result, tracks=tuple(tracks))
@@ -238,7 +277,14 @@ class FilmixPrivate(Filmix):
                     label = _PART_RE.sub('', v.voiceover).strip()
                     streams.extend(self._build_streams(v.files, label, original_lang=original_lang))
             else:
-                streams.extend(self._build_streams(v.files, v.voiceover, edition=Edition["combined"], original_lang=original_lang))
+                streams.extend(
+                    self._build_streams(
+                        v.files,
+                        v.voiceover,
+                        edition=self.parser.profile.media.edition["combined"],
+                        original_lang=original_lang,
+                    )
+                )
         if not streams:
             _log.warning("Filmix multipart episode not found for item_id=%s episode=%s", item_id, episode)
         return streams
@@ -277,7 +323,7 @@ class FilmixPrivate(Filmix):
         return streams
 
     def _build_streams(self, files: list[VideoFile], label: str, *, edition: AttrVal | None = None, original_lang: LangCode) -> list[Stream]:
-        parsed = self._parse_voiceover(label, original_lang=original_lang)
+        parsed = self._parse_voiceover(label, original_lang=original_lang, parser=self.parser, language=self.language)
         streams: list[Stream] = []
         for f in sorted(files, key=lambda x: x.quality, reverse=True):
             if f.pro_plus:

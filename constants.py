@@ -9,7 +9,7 @@ PLAY_CACHE_MAX_AGE = 60
 
 MANIFEST = {
     "id": "community.stremak",
-    "version": "1.0.0a",
+    "version": "1.0.1",
     "name": "Stremak",
     "description": "Streams from multiple services",
     "catalogs": [],

@@ -64,19 +64,26 @@
         if (!token) return;
         input.value = token;
         services.filmix.token = token;
+        services.filmix.verified = false;
+        const requestId = ++services.filmix.checkRequestId;
 
         try {
             const resp = await fetch('/api/auth/filmix/check?token=' + encodeURIComponent(token));
+            if (requestId !== services.filmix.checkRequestId) return;
             if (resp.ok) {
                 const data = await resp.json();
                 services.filmix.userInfo = data;
+                services.filmix.verified = true;
                 showConnected(data);
             } else {
                 services.filmix.userInfo = null;
+                services.filmix.verified = false;
                 showInput(INVALID_TOKEN_MESSAGE);
             }
         } catch (e) {
+            if (requestId !== services.filmix.checkRequestId) return;
             console.error('Token check failed:', e);
+            services.filmix.verified = false;
             showInput(CHECK_ERROR_MESSAGE);
         }
         updateInstallSection();
@@ -149,6 +156,7 @@
                 const data = await resp.json();
                 services.filmix.token = deviceToken;
                 services.filmix.userInfo = data;
+                services.filmix.verified = true;
                 document.getElementById('filmix-token').value = deviceToken;
                 deviceToken = null;
                 stopCountdown();
@@ -184,6 +192,8 @@
     function filmixReset() {
         services.filmix.token = null;
         services.filmix.userInfo = null;
+        services.filmix.verified = false;
+        services.filmix.checkRequestId += 1;
         document.getElementById('filmix-token').value = '';
         showInput();
         updateInstallSection();
